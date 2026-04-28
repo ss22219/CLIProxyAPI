@@ -1,0 +1,1 @@
+{"model":"claude-opus-4.6","messages":[{"role":"user","content":[{"type":"text","text":"What color is this pixel?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/58BHgAI/AL+hc2rNAAAAABJRU5ErkJggg=="}]}],"max_tokens":20}

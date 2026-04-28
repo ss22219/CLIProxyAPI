@@ -1,0 +1,21 @@
+{
+  "model": "claude-opus-4.6",
+  "messages": [{"role": "user", "content": "What is 2+2? Use the calculator tool."}],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "calculator",
+        "description": "Calculate a math expression",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "expression": {"type": "string"}
+          },
+          "required": ["expression"]
+        }
+      }
+    }
+  ],
+  "max_tokens": 200
+}
