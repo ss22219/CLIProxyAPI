@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -301,10 +302,8 @@ func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *corea
 		token.TokenType = stringValue(metadata, "token_type")
 	}
 	if token.Expiry.IsZero() {
-		if expiry := stringValue(metadata, "expiry"); expiry != "" {
-			if ts, errParseTime := time.Parse(time.RFC3339, expiry); errParseTime == nil {
-				token.Expiry = ts
-			}
+		if expiry, ok := oauthExpiry(metadata); ok {
+			token.Expiry = expiry
 		}
 	}
 
@@ -513,10 +512,23 @@ func stringValue(metadata map[string]any, key string) string {
 	if len(metadata) == 0 || key == "" {
 		return ""
 	}
-	if v, ok := metadata[key].(string); ok {
+	if v, ok := metadataValue(metadata, key).(string); ok {
 		return strings.TrimSpace(v)
 	}
 	return ""
+}
+
+func metadataValue(metadata map[string]any, key string) any {
+	if len(metadata) == 0 || key == "" {
+		return nil
+	}
+	if v, ok := metadata[key]; ok {
+		return v
+	}
+	if tokenMap, ok := metadata["token"].(map[string]any); ok && tokenMap != nil {
+		return tokenMap[key]
+	}
+	return nil
 }
 
 func cloneMap(in map[string]any) map[string]any {
@@ -546,6 +558,9 @@ func buildOAuthTokenMap(base map[string]any, tok *oauth2.Token) map[string]any {
 			}
 		}
 	}
+	if !tok.Expiry.IsZero() {
+		merged["expiry_date"] = tok.Expiry.UnixMilli()
+	}
 	return merged
 }
 
@@ -562,11 +577,55 @@ func buildOAuthTokenFields(tok *oauth2.Token, merged map[string]any) map[string]
 	}
 	if tok != nil && !tok.Expiry.IsZero() {
 		fields["expiry"] = tok.Expiry.Format(time.RFC3339)
+		fields["expiry_date"] = tok.Expiry.UnixMilli()
 	}
 	if len(merged) > 0 {
 		fields["token"] = cloneMap(merged)
 	}
 	return fields
+}
+
+func oauthExpiry(metadata map[string]any) (time.Time, bool) {
+	if expiry := stringValue(metadata, "expiry"); expiry != "" {
+		if ts, errParseTime := time.Parse(time.RFC3339, expiry); errParseTime == nil {
+			return ts, true
+		}
+	}
+	if ts, ok := unixMillisTime(metadataValue(metadata, "expiry_date")); ok {
+		return ts, true
+	}
+	return time.Time{}, false
+}
+
+func unixMillisTime(value any) (time.Time, bool) {
+	switch typed := value.(type) {
+	case int64:
+		if typed > 0 {
+			return time.UnixMilli(typed), true
+		}
+	case int:
+		if typed > 0 {
+			return time.UnixMilli(int64(typed)), true
+		}
+	case float64:
+		if typed > 0 {
+			return time.UnixMilli(int64(typed)), true
+		}
+	case json.Number:
+		if millis, errParse := typed.Int64(); errParse == nil && millis > 0 {
+			return time.UnixMilli(millis), true
+		}
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return time.Time{}, false
+		}
+		millis, errParse := strconv.ParseInt(trimmed, 10, 64)
+		if errParse == nil && millis > 0 {
+			return time.UnixMilli(millis), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func tokenValueFromMetadata(metadata map[string]any) string {

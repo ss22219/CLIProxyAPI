@@ -607,10 +607,8 @@ func prepareGeminiCLITokenSource(ctx context.Context, cfg *config.Config, auth *
 		token.TokenType = stringValue(metadata, "token_type")
 	}
 	if token.Expiry.IsZero() {
-		if expiry := stringValue(metadata, "expiry"); expiry != "" {
-			if ts, err := time.Parse(time.RFC3339, expiry); err == nil {
-				token.Expiry = ts
-			}
+		if expiry, ok := geminiCLIExpiry(metadata); ok {
+			token.Expiry = expiry
 		}
 	}
 
@@ -670,6 +668,9 @@ func buildGeminiTokenMap(base map[string]any, tok *oauth2.Token) map[string]any 
 			}
 		}
 	}
+	if tok != nil && !tok.Expiry.IsZero() {
+		merged["expiry_date"] = tok.Expiry.UnixMilli()
+	}
 	return merged
 }
 
@@ -686,11 +687,55 @@ func buildGeminiTokenFields(tok *oauth2.Token, merged map[string]any) map[string
 	}
 	if !tok.Expiry.IsZero() {
 		fields["expiry"] = tok.Expiry.Format(time.RFC3339)
+		fields["expiry_date"] = tok.Expiry.UnixMilli()
 	}
 	if len(merged) > 0 {
 		fields["token"] = cloneMap(merged)
 	}
 	return fields
+}
+
+func geminiCLIExpiry(metadata map[string]any) (time.Time, bool) {
+	if expiry := stringValue(metadata, "expiry"); expiry != "" {
+		if ts, err := time.Parse(time.RFC3339, expiry); err == nil {
+			return ts, true
+		}
+	}
+	if ts, ok := unixMillisTime(metadataValue(metadata, "expiry_date")); ok {
+		return ts, true
+	}
+	return time.Time{}, false
+}
+
+func unixMillisTime(value any) (time.Time, bool) {
+	switch typed := value.(type) {
+	case int64:
+		if typed > 0 {
+			return time.UnixMilli(typed), true
+		}
+	case int:
+		if typed > 0 {
+			return time.UnixMilli(int64(typed)), true
+		}
+	case float64:
+		if typed > 0 {
+			return time.UnixMilli(int64(typed)), true
+		}
+	case json.Number:
+		if millis, err := typed.Int64(); err == nil && millis > 0 {
+			return time.UnixMilli(millis), true
+		}
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return time.Time{}, false
+		}
+		millis, err := strconv.ParseInt(trimmed, 10, 64)
+		if err == nil && millis > 0 {
+			return time.UnixMilli(millis), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func resolveGeminiProjectID(auth *cliproxyauth.Auth) string {
@@ -736,7 +781,7 @@ func stringValue(m map[string]any, key string) string {
 	if m == nil {
 		return ""
 	}
-	if v, ok := m[key]; ok {
+	if v := metadataValue(m, key); v != nil {
 		switch typed := v.(type) {
 		case string:
 			return typed
@@ -745,6 +790,19 @@ func stringValue(m map[string]any, key string) string {
 		}
 	}
 	return ""
+}
+
+func metadataValue(m map[string]any, key string) any {
+	if m == nil {
+		return nil
+	}
+	if v, ok := m[key]; ok {
+		return v
+	}
+	if tokenMap, ok := m["token"].(map[string]any); ok && tokenMap != nil {
+		return tokenMap[key]
+	}
+	return nil
 }
 
 // applyGeminiCLIHeaders sets required headers for the Gemini CLI upstream.
