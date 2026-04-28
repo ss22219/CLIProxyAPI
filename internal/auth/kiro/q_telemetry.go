@@ -14,12 +14,23 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// SendQTelemetryEvent sends a chatAddMessage telemetry event via the Q API
-// (Bearer token, AmazonCodeWhispererService.SendTelemetryEvent).
-// clientID should be a stable UUID from GetTelemetryClientID().
+// SendQTelemetryEvent sends a chatAddMessage telemetry event to the default Q API endpoint.
 func SendQTelemetryEvent(ctx context.Context, httpClient *http.Client, accessToken, conversationID, modelID, profileArn string, responseLength int, timeToFirstChunkMs float64, timeBetweenChunks []float64) error {
+	url := fmt.Sprintf("https://q.%s.amazonaws.com/", DefaultRegion)
+	return SendQTelemetryEventTo(ctx, httpClient, url, accessToken, conversationID, modelID, profileArn, responseLength, timeToFirstChunkMs, timeBetweenChunks)
+}
+
+// SendQTelemetryEventTo sends a chatAddMessage telemetry event to the given URL.
+// timeBetweenChunks nil is serialized as [] (empty array), never null.
+func SendQTelemetryEventTo(ctx context.Context, httpClient *http.Client, url, accessToken, conversationID, modelID, profileArn string, responseLength int, timeToFirstChunkMs float64, timeBetweenChunks []float64) error {
 	if strings.TrimSpace(accessToken) == "" {
 		return fmt.Errorf("kiro: access token required for SendTelemetryEvent")
+	}
+
+	// Ensure timeBetweenChunks is never null in JSON — always [].
+	chunks := timeBetweenChunks
+	if chunks == nil {
+		chunks = []float64{}
 	}
 
 	osUpper := strings.ToUpper(KiroOSTag())
@@ -32,7 +43,7 @@ func SendQTelemetryEvent(ctx context.Context, httpClient *http.Client, accessTok
 				"conversationId":               conversationID,
 				"messageId":                    uuid.New().String(),
 				"timeToFirstChunkMilliseconds": timeToFirstChunkMs,
-				"timeBetweenChunks":            timeBetweenChunks,
+				"timeBetweenChunks":            chunks,
 				"responseLength":               responseLength,
 			},
 		},
@@ -55,7 +66,6 @@ func SendQTelemetryEvent(ctx context.Context, httpClient *http.Client, accessTok
 		return fmt.Errorf("kiro: marshal SendTelemetryEvent: %w", err)
 	}
 
-	url := fmt.Sprintf("https://q.%s.amazonaws.com/", DefaultRegion)
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 

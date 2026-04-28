@@ -81,8 +81,12 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	reporter.EnsurePublished(ctx)
 	resp = cliproxyexecutor.Response{Payload: openAIResp, Headers: httpResp.Header.Clone()}
 
-	// Fire-and-forget Q API telemetry
-	go fireQTelemetry(token, conversationID, baseModel, profileArn, len(content), ttfc, nil)
+	// Fire-and-forget Q API telemetry (non-streaming: all events parsed at once, timeBetweenChunks is empty)
+	go fireQTelemetry(token, conversationID, baseModel, profileArn, telemetryStats{
+		ResponseLength:    len(content),
+		TTFCMs:            ttfc,
+		TimeBetweenChunks: []float64{},
+	})
 
 	return resp, nil
 }
@@ -139,10 +143,9 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	go func() {
 		defer close(out)
 		defer func() { _ = httpResp.Body.Close() }()
-		respLen := streamKiroToOpenAISSE(ctx, e.cfg, httpResp.Body, req.Model, out)
+		stats := streamKiroToOpenAISSE(ctx, e.cfg, httpResp.Body, req.Model, t0, out)
 		reporter.EnsurePublished(ctx)
-		ttfc := float64(time.Since(t0).Milliseconds())
-		go fireQTelemetry(token, conversationID, baseModel, profileArn, respLen, ttfc, nil)
+		go fireQTelemetry(token, conversationID, baseModel, profileArn, stats)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
@@ -157,14 +160,27 @@ func newKiroHTTPRequest(ctx context.Context, token string, body []byte) (*http.R
 	return req, nil
 }
 
-// fireQTelemetry sends Q API telemetry in a fire-and-forget manner.
-// Errors are logged at debug level and never propagated.
-func fireQTelemetry(token, conversationID, modelID, profileArn string, responseLength int, ttfcMs float64, timeBetweenChunks []float64) {
+// telemetryStats holds timing data collected during response parsing.
+type telemetryStats struct {
+	ResponseLength    int
+	TTFCMs            float64   // time-to-first-content in milliseconds
+	TimeBetweenChunks []float64 // seconds between consecutive content events
+}
+
+// telemetrySender is the function used to send telemetry. Package-level var for testability.
+var telemetrySender = defaultTelemetrySender
+
+func defaultTelemetrySender(token, conversationID, modelID, profileArn string, stats telemetryStats) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := kiroauth.SendQTelemetryEvent(ctx, &http.Client{Timeout: 10 * time.Second}, token, conversationID, modelID, profileArn, responseLength, ttfcMs, timeBetweenChunks); err != nil {
+	if err := kiroauth.SendQTelemetryEvent(ctx, &http.Client{Timeout: 10 * time.Second}, token, conversationID, modelID, profileArn, stats.ResponseLength, stats.TTFCMs, stats.TimeBetweenChunks); err != nil {
 		log.Debugf("kiro: Q telemetry failed (non-fatal): %v", err)
 	}
+}
+
+// fireQTelemetry sends Q API telemetry in a fire-and-forget manner.
+func fireQTelemetry(token, conversationID, modelID, profileArn string, stats telemetryStats) {
+	telemetrySender(token, conversationID, modelID, profileArn, stats)
 }
 
 // buildKiroRequestBody converts an OpenAI-format payload into a Kiro conversationState JSON.
@@ -684,7 +700,7 @@ func buildOpenAINonStreamResponse(model, content string, toolCalls []kiroToolCal
 	return b
 }
 
-func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, out chan<- cliproxyexecutor.StreamChunk) int {
+func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, t0 time.Time, out chan<- cliproxyexecutor.StreamChunk) telemetryStats {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(nil, 52_428_800)
 	var buf strings.Builder
@@ -693,6 +709,12 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 	var cur *kiroToolCall
 	tcIndex := 0
 	totalContentLen := 0
+
+	// Timing collection
+	var ttfc float64
+	var timeBetweenChunks []float64
+	firstContent := true
+	var lastContentTime time.Time
 
 	flush := func() {
 		if buf.Len() == 0 {
@@ -703,6 +725,15 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 		for _, evt := range events {
 			switch evt.evtType {
 			case "content":
+				now := time.Now()
+				if firstContent {
+					ttfc = float64(now.Sub(t0).Milliseconds())
+					firstContent = false
+				} else {
+					timeBetweenChunks = append(timeBetweenChunks, now.Sub(lastContentTime).Seconds())
+				}
+				lastContentTime = now
+
 				chunk := buildOpenAISSEChunk(chatID, model, evt.data, "", nil)
 				helps.AppendAPIResponseChunk(ctx, cfg, chunk)
 				out <- cliproxyexecutor.StreamChunk{Payload: chunk}
@@ -745,7 +776,15 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 		finishReason = "tool_calls"
 	}
 	out <- cliproxyexecutor.StreamChunk{Payload: buildOpenAISSEChunk(chatID, model, "", finishReason, nil)}
-	return totalContentLen
+
+	if timeBetweenChunks == nil {
+		timeBetweenChunks = []float64{}
+	}
+	return telemetryStats{
+		ResponseLength:    totalContentLen,
+		TTFCMs:            ttfc,
+		TimeBetweenChunks: timeBetweenChunks,
+	}
 }
 
 func buildOpenAISSEChunk(id, model, content, finishReason string, toolCalls []map[string]any) []byte {

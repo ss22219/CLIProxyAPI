@@ -88,15 +88,15 @@ func TestSendQTelemetryEvent_HeadersAndTarget(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Direct header verification (SendQTelemetryEvent uses hardcoded URL)
-	req, _ := http.NewRequest(http.MethodPost, srv.URL, nil)
-	SetRuntimeHeaders(req, "test-tok", "AmazonCodeWhispererService.SendTelemetryEvent")
+	// Use SendQTelemetryEventTo to actually hit the test server
+	ResetTelemetryClientIDCache()
+	defer ResetTelemetryClientIDCache()
 
-	resp, err := http.DefaultClient.Do(req)
+	err := SendQTelemetryEventTo(context.Background(), srv.Client(), srv.URL,
+		"test-tok", "conv", "model", "arn", 100, 50, nil)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("SendQTelemetryEventTo failed: %v", err)
 	}
-	defer resp.Body.Close()
 
 	// Also verify the function doesn't error with empty token
 	err = SendQTelemetryEvent(context.Background(), http.DefaultClient, "", "conv", "model", "arn", 100, 50, nil)

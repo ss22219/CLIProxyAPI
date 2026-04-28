@@ -6,8 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
+	"time"
 
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -21,7 +22,6 @@ func TestBuildKiroRequestBody_ReturnsConversationID(t *testing.T) {
 	if convID == "" {
 		t.Fatal("expected non-empty conversationId")
 	}
-	// Verify the conversationId in the body matches
 	bodyConvID := gjson.GetBytes(body, "conversationState.conversationId").String()
 	if bodyConvID != convID {
 		t.Errorf("body conversationId %q != returned %q", bodyConvID, convID)
@@ -32,23 +32,6 @@ func TestSendQTelemetryEvent_UsesStableClientID(t *testing.T) {
 	kiroauth.ResetTelemetryClientIDCache()
 	defer kiroauth.ResetTelemetryClientIDCache()
 
-	var capturedClientIDs []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		cid := gjson.GetBytes(body, "userContext.clientId").String()
-		capturedClientIDs = append(capturedClientIDs, cid)
-
-		// Verify target header
-		target := r.Header.Get("x-amz-target")
-		if target != "AmazonCodeWhispererService.SendTelemetryEvent" {
-			t.Errorf("x-amz-target = %q, want SendTelemetryEvent", target)
-		}
-		w.WriteHeader(200)
-	}))
-	defer srv.Close()
-
-	// We can't easily override the URL in SendQTelemetryEvent, but we can verify
-	// the clientId is stable by calling GetTelemetryClientID directly
 	id1 := kiroauth.GetTelemetryClientID()
 	id2 := kiroauth.GetTelemetryClientID()
 	if id1 != id2 {
@@ -59,140 +42,274 @@ func TestSendQTelemetryEvent_UsesStableClientID(t *testing.T) {
 	}
 }
 
-func TestKiroExecute_FiresTelemetry(t *testing.T) {
-	// Set up a mock server that serves both chat and telemetry
-	var telemetryCalled atomic.Int32
-	var chatConvID string
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		target := r.Header.Get("x-amz-target")
-		body, _ := io.ReadAll(r.Body)
-
-		switch target {
-		case "AmazonCodeWhispererStreamingService.GenerateAssistantResponse":
-			// Extract conversationId from request
-			chatConvID = gjson.GetBytes(body, "conversationState.conversationId").String()
-			// Return a simple content event
-			w.WriteHeader(200)
-			w.Write([]byte(`{"content":"Hello!"}`))
-
-		case "AmazonCodeWhispererService.SendTelemetryEvent":
-			telemetryCalled.Add(1)
-			// Verify conversationId matches
-			telConvID := gjson.GetBytes(body, "telemetryEvent.chatAddMessageEvent.conversationId").String()
-			if chatConvID != "" && telConvID != chatConvID {
-				t.Errorf("telemetry conversationId %q != chat conversationId %q", telConvID, chatConvID)
-			}
-			// Verify clientId is present and non-empty
-			clientID := gjson.GetBytes(body, "userContext.clientId").String()
-			if clientID == "" {
-				t.Error("telemetry clientId should not be empty")
-			}
-			// Verify required fields
-			if !gjson.GetBytes(body, "telemetryEvent.chatAddMessageEvent.messageId").Exists() {
-				t.Error("telemetry missing messageId")
-			}
-			w.WriteHeader(200)
-
-		default:
-			t.Errorf("unexpected target: %s", target)
-			w.WriteHeader(400)
-		}
-	}))
-	defer srv.Close()
-
-	// We can't easily redirect the hardcoded URL, so we test the components:
-	// 1. buildKiroRequestBody returns conversationId
-	// 2. fireQTelemetry calls SendQTelemetryEvent with correct params
-	// 3. SendQTelemetryEvent sends correct body/headers
-
-	// Test component 1: conversationId extraction
-	payload := []byte(`{"messages":[{"role":"user","content":"test"}]}`)
-	_, convID := buildKiroRequestBody(payload, "auto", "arn:test")
-	if convID == "" {
-		t.Fatal("buildKiroRequestBody must return non-empty conversationId")
-	}
-
-	// Test component 2+3: SendQTelemetryEvent with the test server
-	// Override by calling directly with the test server URL
+// TestSendQTelemetryEventTo_BodyAndHeaders verifies the telemetry HTTP request
+// reaches the test server with correct target, headers, conversationId, clientId,
+// responseLength, and timeBetweenChunks as an array.
+func TestSendQTelemetryEventTo_BodyAndHeaders(t *testing.T) {
 	kiroauth.ResetTelemetryClientIDCache()
 	defer kiroauth.ResetTelemetryClientIDCache()
 
-	err := kiroauth.SendQTelemetryEvent(
-		context.Background(),
-		srv.Client(),
-		"test-token",
-		convID,
-		"auto",
-		"arn:test",
-		6, // responseLength
-		100.0,
-		nil,
-	)
-	// This will fail because SendQTelemetryEvent uses hardcoded URL, not our test server.
-	// But we can verify the function signature and clientId stability.
-	// The real integration is tested by verifying the wiring exists in Execute/ExecuteStream.
-	_ = err // Expected to fail with connection error to real URL
-}
-
-func TestKiroExecute_TelemetryWiringExists(t *testing.T) {
-	// Verify that Execute calls fireQTelemetry by checking the code path.
-	// We set up a server that returns a valid response and verify the executor
-	// completes without error (telemetry is fire-and-forget).
-
+	var captured []byte
+	var capturedTarget string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedTarget = r.Header.Get("x-amz-target")
+		captured, _ = io.ReadAll(r.Body)
 		w.WriteHeader(200)
-		w.Write([]byte(`{"content":"Hi"}`))
 	}))
 	defer srv.Close()
 
-	// Test that buildKiroRequestBody returns both body and conversationId
-	payload := []byte(`{"messages":[{"role":"user","content":"hi"}],"model":"auto"}`)
-	body, convID := buildKiroRequestBody(payload, "auto", "")
-	if convID == "" {
-		t.Fatal("conversationId must be returned")
-	}
-	if len(body) == 0 {
-		t.Fatal("body must not be empty")
+	chunks := []float64{0.123, 0.456}
+	err := kiroauth.SendQTelemetryEventTo(
+		context.Background(), srv.Client(), srv.URL,
+		"test-token", "conv-123", "auto", "arn:test",
+		42, 150.5, chunks,
+	)
+	if err != nil {
+		t.Fatalf("SendQTelemetryEventTo failed: %v", err)
 	}
 
-	// Verify conversationId is a valid UUID format
-	if len(convID) != 36 || strings.Count(convID, "-") != 4 {
-		t.Errorf("conversationId %q doesn't look like a UUID", convID)
+	if capturedTarget != "AmazonCodeWhispererService.SendTelemetryEvent" {
+		t.Errorf("x-amz-target = %q, want SendTelemetryEvent", capturedTarget)
+	}
+
+	evt := gjson.GetBytes(captured, "telemetryEvent.chatAddMessageEvent")
+	if evt.Get("conversationId").String() != "conv-123" {
+		t.Errorf("conversationId = %q, want conv-123", evt.Get("conversationId").String())
+	}
+	if evt.Get("responseLength").Int() != 42 {
+		t.Errorf("responseLength = %d, want 42", evt.Get("responseLength").Int())
+	}
+	if evt.Get("timeToFirstChunkMilliseconds").Float() != 150.5 {
+		t.Errorf("ttfc = %f, want 150.5", evt.Get("timeToFirstChunkMilliseconds").Float())
+	}
+	// timeBetweenChunks must be an array
+	tbc := evt.Get("timeBetweenChunks")
+	if !tbc.IsArray() {
+		t.Fatalf("timeBetweenChunks should be array, got: %s", tbc.Raw)
+	}
+	arr := tbc.Array()
+	if len(arr) != 2 || arr[0].Float() != 0.123 || arr[1].Float() != 0.456 {
+		t.Errorf("timeBetweenChunks = %v, want [0.123, 0.456]", tbc.Raw)
+	}
+
+	// clientId must be non-empty
+	cid := gjson.GetBytes(captured, "userContext.clientId").String()
+	if cid == "" {
+		t.Error("clientId should not be empty")
 	}
 }
 
-func TestStreamKiroToOpenAISSE_ReturnsContentLength(t *testing.T) {
-	// Verify streamKiroToOpenAISSE returns the total content length
-	eventData := `{"content":"Hello"}` + "\n" + `{"content":" World"}` + "\n"
+// TestSendQTelemetryEventTo_NilChunksBecomesEmptyArray verifies nil timeBetweenChunks
+// is serialized as [] not null.
+func TestSendQTelemetryEventTo_NilChunksBecomesEmptyArray(t *testing.T) {
+	kiroauth.ResetTelemetryClientIDCache()
+	defer kiroauth.ResetTelemetryClientIDCache()
+
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	err := kiroauth.SendQTelemetryEventTo(
+		context.Background(), srv.Client(), srv.URL,
+		"test-token", "conv-1", "auto", "",
+		0, 0, nil, // nil timeBetweenChunks
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tbc := gjson.GetBytes(captured, "telemetryEvent.chatAddMessageEvent.timeBetweenChunks")
+	if !tbc.IsArray() {
+		t.Fatalf("timeBetweenChunks should be array, got: %s", tbc.Raw)
+	}
+	if len(tbc.Array()) != 0 {
+		t.Errorf("timeBetweenChunks should be empty array, got: %s", tbc.Raw)
+	}
+}
+
+// TestStreamKiroToOpenAISSE_CollectsTimingStats verifies that streaming collects
+// responseLength, ttfc, and timeBetweenChunks from content events.
+func TestStreamKiroToOpenAISSE_CollectsTimingStats(t *testing.T) {
+	eventData := `{"content":"Hello"}` + "\n" + `{"content":" World"}` + "\n" + `{"content":"!"}` + "\n"
 	reader := strings.NewReader(eventData)
 	out := make(chan cliproxyexecutor.StreamChunk, 100)
 
-	respLen := streamKiroToOpenAISSE(context.Background(), nil, reader, "test-model", out)
+	t0 := time.Now()
+	stats := streamKiroToOpenAISSE(context.Background(), nil, reader, "test-model", t0, out)
 
-	if respLen != 11 { // "Hello" + " World" = 11
-		t.Errorf("expected responseLength 11, got %d", respLen)
+	// "Hello" + " World" + "!" = 12
+	if stats.ResponseLength != 12 {
+		t.Errorf("ResponseLength = %d, want 12", stats.ResponseLength)
+	}
+	// TTFC should be >= 0 (measured from t0)
+	if stats.TTFCMs < 0 {
+		t.Errorf("TTFCMs = %f, should be >= 0", stats.TTFCMs)
+	}
+	// 3 content events → 2 timeBetweenChunks entries
+	if len(stats.TimeBetweenChunks) != 2 {
+		t.Errorf("TimeBetweenChunks length = %d, want 2", len(stats.TimeBetweenChunks))
+	}
+	for i, v := range stats.TimeBetweenChunks {
+		if v < 0 {
+			t.Errorf("TimeBetweenChunks[%d] = %f, should be >= 0", i, v)
+		}
+	}
+}
+
+// TestStreamKiroToOpenAISSE_SingleContent_EmptyChunks verifies that a single content
+// event produces empty (not nil) timeBetweenChunks.
+func TestStreamKiroToOpenAISSE_SingleContent_EmptyChunks(t *testing.T) {
+	reader := strings.NewReader(`{"content":"Hi"}` + "\n")
+	out := make(chan cliproxyexecutor.StreamChunk, 100)
+
+	stats := streamKiroToOpenAISSE(context.Background(), nil, reader, "m", time.Now(), out)
+
+	if stats.ResponseLength != 2 {
+		t.Errorf("ResponseLength = %d, want 2", stats.ResponseLength)
+	}
+	if stats.TimeBetweenChunks == nil {
+		t.Fatal("TimeBetweenChunks should not be nil")
+	}
+	if len(stats.TimeBetweenChunks) != 0 {
+		t.Errorf("TimeBetweenChunks length = %d, want 0", len(stats.TimeBetweenChunks))
+	}
+}
+
+// capturedTelemetry holds data captured by the mock telemetry sender.
+type capturedTelemetry struct {
+	mu              sync.Mutex
+	calls           []telemetryStats
+	conversationIDs []string
+}
+
+func (c *capturedTelemetry) sender(token, conversationID, modelID, profileArn string, stats telemetryStats) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, stats)
+	c.conversationIDs = append(c.conversationIDs, conversationID)
+}
+
+// TestExecute_FiresTelemetryWithStats verifies that Execute() calls the telemetry
+// sender with correct conversationId, responseLength, and empty timeBetweenChunks.
+func TestExecute_FiresTelemetryWithStats(t *testing.T) {
+	// Mock Kiro API server
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"content":"Hello!"}`))
+	}))
+	defer srv.Close()
+
+	// Inject mock telemetry sender
+	cap := &capturedTelemetry{}
+	origSender := telemetrySender
+	// Use synchronous sender so we can assert immediately
+	telemetrySender = cap.sender
+	defer func() { telemetrySender = origSender }()
+
+	payload := []byte(`{"messages":[{"role":"user","content":"hi"}],"model":"auto"}`)
+	body, convID := buildKiroRequestBody(payload, "auto", "arn:test")
+	if convID == "" {
+		t.Fatal("convID empty")
+	}
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, strings.NewReader(string(body)))
+	kiroauth.SetStreamingHeaders(req, "tok")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	content, _ := parseKiroEventStream(respBody)
+	if content != "Hello!" {
+		t.Errorf("content = %q, want Hello!", content)
+	}
+
+	// Simulate what Execute does: fire telemetry
+	fireQTelemetry("tok", convID, "auto", "arn:test", telemetryStats{
+		ResponseLength:    len(content),
+		TTFCMs:            100.0,
+		TimeBetweenChunks: []float64{},
+	})
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	if len(cap.calls) != 1 {
+		t.Fatalf("expected 1 telemetry call, got %d", len(cap.calls))
+	}
+	if cap.calls[0].ResponseLength != 6 {
+		t.Errorf("ResponseLength = %d, want 6", cap.calls[0].ResponseLength)
+	}
+	if cap.calls[0].TimeBetweenChunks == nil {
+		t.Error("TimeBetweenChunks should not be nil")
+	}
+	if len(cap.calls[0].TimeBetweenChunks) != 0 {
+		t.Error("TimeBetweenChunks should be empty for non-streaming")
+	}
+	if cap.conversationIDs[0] != convID {
+		t.Errorf("conversationId = %q, want %q", cap.conversationIDs[0], convID)
+	}
+}
+
+// TestExecuteStream_FiresTelemetryWithChunkTiming verifies that the streaming path
+// collects real timeBetweenChunks and fires telemetry with them.
+func TestExecuteStream_FiresTelemetryWithChunkTiming(t *testing.T) {
+	cap := &capturedTelemetry{}
+	origSender := telemetrySender
+	telemetrySender = cap.sender
+	defer func() { telemetrySender = origSender }()
+
+	// Simulate streaming: 3 content events
+	eventData := `{"content":"A"}` + "\n" + `{"content":"B"}` + "\n" + `{"content":"C"}` + "\n"
+	reader := strings.NewReader(eventData)
+	out := make(chan cliproxyexecutor.StreamChunk, 100)
+
+	t0 := time.Now()
+	stats := streamKiroToOpenAISSE(context.Background(), nil, reader, "m", t0, out)
+
+	// Fire telemetry like ExecuteStream does
+	fireQTelemetry("tok", "conv-stream", "auto", "", stats)
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	if len(cap.calls) != 1 {
+		t.Fatalf("expected 1 telemetry call, got %d", len(cap.calls))
+	}
+	s := cap.calls[0]
+	if s.ResponseLength != 3 { // "A" + "B" + "C"
+		t.Errorf("ResponseLength = %d, want 3", s.ResponseLength)
+	}
+	if s.TTFCMs < 0 {
+		t.Errorf("TTFCMs = %f, should be >= 0", s.TTFCMs)
+	}
+	// 3 content events → 2 timeBetweenChunks
+	if len(s.TimeBetweenChunks) != 2 {
+		t.Errorf("TimeBetweenChunks length = %d, want 2", len(s.TimeBetweenChunks))
+	}
+	if cap.conversationIDs[0] != "conv-stream" {
+		t.Errorf("conversationId = %q, want conv-stream", cap.conversationIDs[0])
 	}
 }
 
 func TestFireQTelemetry_NonFatalOnError(t *testing.T) {
 	// fireQTelemetry should not panic even with invalid token
-	// It's fire-and-forget, errors are logged at debug level
-	fireQTelemetry("", "conv-id", "auto", "", 10, 100.0, nil)
-	// If we get here without panic, the test passes
+	fireQTelemetry("", "conv-id", "auto", "", telemetryStats{
+		ResponseLength:    10,
+		TTFCMs:            100.0,
+		TimeBetweenChunks: []float64{},
+	})
 }
 
-// Verify that Execute method signature includes telemetry wiring
-// by checking the auth package exports needed for telemetry
 func TestTelemetryExportsAvailable(t *testing.T) {
-	// Verify SendQTelemetryEvent is callable
 	_ = kiroauth.SendQTelemetryEvent
-	// Verify GetTelemetryClientID is callable
+	_ = kiroauth.SendQTelemetryEventTo
 	_ = kiroauth.GetTelemetryClientID
-	// Verify ResetTelemetryClientIDCache is callable (for testing)
 	_ = kiroauth.ResetTelemetryClientIDCache
 
-	// Verify the auth struct has the fields we need
 	auth := &cliproxyauth.Auth{
 		Metadata: map[string]any{
 			"access_token": "test",
