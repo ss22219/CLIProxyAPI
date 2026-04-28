@@ -11,8 +11,10 @@ import (
 	"time"
 
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -114,6 +116,65 @@ func TestBuildKiroRequestBody_AnthropicSystemArrayAndImage(t *testing.T) {
 	}
 	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.images.0.source.bytes").String(); got != "YWJj" {
 		t.Fatalf("image bytes = %q, want YWJj; body=%s", got, string(body))
+	}
+}
+
+func TestTranslateKiroNonStreamResponseToClaudeIncludesUsage(t *testing.T) {
+	openAIResp := buildOpenAINonStreamResponse("claude-opus-4.6", "pong", nil)
+	out := translateKiroNonStreamResponse(context.Background(), "claude-opus-4.6", openAIResp, []byte(`{"stream":false}`), cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatClaude,
+		OriginalRequest: []byte(`{"stream":false}`),
+	})
+
+	if got := gjson.GetBytes(out, "type").String(); got != "message" {
+		t.Fatalf("response type = %q, want message; body=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "content.0.text").String(); got != "pong" {
+		t.Fatalf("content text = %q, want pong; body=%s", got, string(out))
+	}
+	if !gjson.GetBytes(out, "usage.input_tokens").Exists() {
+		t.Fatalf("usage.input_tokens missing; body=%s", string(out))
+	}
+	if !gjson.GetBytes(out, "usage.output_tokens").Exists() {
+		t.Fatalf("usage.output_tokens missing; body=%s", string(out))
+	}
+}
+
+func TestStreamKiroToClaudeSSEIncludesMessageUsage(t *testing.T) {
+	out := make(chan cliproxyexecutor.StreamChunk, 32)
+	stats := streamKiroToClaudeSSE(context.Background(), nil, strings.NewReader(`{"content":"pong"}`), "claude-opus-4.6", []byte(`{"stream":true}`), cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatClaude,
+		OriginalRequest: []byte(`{"stream":true}`),
+	}, time.Now(), out)
+
+	if stats.ResponseLength != len("pong") {
+		t.Fatalf("response length = %d, want %d", stats.ResponseLength, len("pong"))
+	}
+
+	var combined strings.Builder
+	for {
+		select {
+		case chunk := <-out:
+			if chunk.Err != nil {
+				t.Fatalf("unexpected stream error: %v", chunk.Err)
+			}
+			combined.Write(chunk.Payload)
+		default:
+			text := combined.String()
+			if !strings.Contains(text, "event: message_start") {
+				t.Fatalf("message_start missing; stream=%s", text)
+			}
+			if !strings.Contains(text, `"type":"text_delta","text":"pong"`) {
+				t.Fatalf("text delta missing; stream=%s", text)
+			}
+			if !strings.Contains(text, `"usage":{"input_tokens":0,"output_tokens":0}`) {
+				t.Fatalf("message usage missing; stream=%s", text)
+			}
+			if !strings.Contains(text, "event: message_stop") {
+				t.Fatalf("message_stop missing; stream=%s", text)
+			}
+			return
+		}
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -82,8 +83,9 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 
 	content, toolCalls := parseKiroEventStream(body)
 	openAIResp := buildOpenAINonStreamResponse(req.Model, content, toolCalls)
+	outResp := translateKiroNonStreamResponse(ctx, req.Model, openAIResp, req.Payload, opts)
 	reporter.EnsurePublished(ctx)
-	resp = cliproxyexecutor.Response{Payload: openAIResp, Headers: httpResp.Header.Clone()}
+	resp = cliproxyexecutor.Response{Payload: outResp, Headers: httpResp.Header.Clone()}
 
 	// Fire-and-forget Q API telemetry (non-streaming: all events parsed at once, timeBetweenChunks is empty)
 	go fireQTelemetry(token, conversationID, baseModel, profileArn, telemetryStats{
@@ -151,7 +153,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	go func() {
 		defer close(out)
 		defer func() { _ = httpResp.Body.Close() }()
-		stats := streamKiroToOpenAISSE(ctx, e.cfg, httpResp.Body, req.Model, t0, out)
+		stats := streamKiroToSourceSSE(ctx, e.cfg, httpResp.Body, req.Model, req.Payload, opts, t0, out)
 		reporter.EnsurePublished(ctx)
 		go fireQTelemetry(token, conversationID, baseModel, profileArn, stats)
 	}()
@@ -859,6 +861,63 @@ func buildOpenAINonStreamResponse(model, content string, toolCalls []kiroToolCal
 	}
 	b, _ := json.Marshal(resp)
 	return b
+}
+
+func translateKiroNonStreamResponse(ctx context.Context, model string, openAIResp, requestPayload []byte, opts cliproxyexecutor.Options) []byte {
+	if opts.SourceFormat != sdktranslator.FormatClaude {
+		return openAIResp
+	}
+	originalRequest := opts.OriginalRequest
+	if len(originalRequest) == 0 {
+		originalRequest = requestPayload
+	}
+	var param any
+	return sdktranslator.TranslateNonStream(ctx, sdktranslator.FormatOpenAI, sdktranslator.FormatClaude, model, originalRequest, requestPayload, openAIResp, &param)
+}
+
+func streamKiroToSourceSSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, requestPayload []byte, opts cliproxyexecutor.Options, t0 time.Time, out chan<- cliproxyexecutor.StreamChunk) telemetryStats {
+	if opts.SourceFormat == sdktranslator.FormatClaude {
+		return streamKiroToClaudeSSE(ctx, cfg, body, model, requestPayload, opts, t0, out)
+	}
+	return streamKiroToOpenAISSE(ctx, cfg, body, model, t0, out)
+}
+
+func streamKiroToClaudeSSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, requestPayload []byte, opts cliproxyexecutor.Options, t0 time.Time, out chan<- cliproxyexecutor.StreamChunk) telemetryStats {
+	openAIChunks := make(chan cliproxyexecutor.StreamChunk)
+	statsCh := make(chan telemetryStats, 1)
+	go func() {
+		statsCh <- streamKiroToOpenAISSE(ctx, cfg, body, model, t0, openAIChunks)
+		close(openAIChunks)
+	}()
+
+	originalRequest := opts.OriginalRequest
+	if len(originalRequest) == 0 {
+		originalRequest = requestPayload
+	}
+	var param any
+	for chunk := range openAIChunks {
+		if chunk.Err != nil {
+			out <- chunk
+			continue
+		}
+		for _, translated := range sdktranslator.TranslateStream(ctx, sdktranslator.FormatOpenAI, sdktranslator.FormatClaude, model, originalRequest, requestPayload, openAIStreamData(chunk.Payload), &param) {
+			out <- cliproxyexecutor.StreamChunk{Payload: translated}
+		}
+	}
+	for _, translated := range sdktranslator.TranslateStream(ctx, sdktranslator.FormatOpenAI, sdktranslator.FormatClaude, model, originalRequest, requestPayload, []byte("data: [DONE]"), &param) {
+		out <- cliproxyexecutor.StreamChunk{Payload: translated}
+	}
+	return <-statsCh
+}
+
+func openAIStreamData(payload []byte) []byte {
+	if bytes.HasPrefix(bytes.TrimSpace(payload), []byte("data:")) {
+		return payload
+	}
+	out := make([]byte, 0, len("data: ")+len(payload))
+	out = append(out, "data: "...)
+	out = append(out, payload...)
+	return out
 }
 
 func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, t0 time.Time, out chan<- cliproxyexecutor.StreamChunk) telemetryStats {
