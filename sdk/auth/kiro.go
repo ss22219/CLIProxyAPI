@@ -12,12 +12,15 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const (
+	kiroLoginModeMetadataKey = "kiro_login_mode"
+	kiroLoginModeImport      = "import"
+)
+
 // kiroRefreshLead is the duration before token expiry when refresh should occur.
 var kiroRefreshLead = 5 * time.Minute
 
 // KiroAuthenticator implements the Authenticator interface for Kiro (AWS Q).
-// It imports credentials from the kiro-cli SQLite database and supports
-// both OIDC (SSO) and Social (Google/GitHub) token refresh.
 type KiroAuthenticator struct{}
 
 // NewKiroAuthenticator constructs a new Kiro authenticator.
@@ -35,15 +38,83 @@ func (KiroAuthenticator) RefreshLead() *time.Duration {
 	return &kiroRefreshLead
 }
 
-// Login imports Kiro credentials from the kiro-cli SQLite database.
+// Login performs Kiro authentication. Default is SSO device code flow.
+// Set metadata key "kiro_login_mode" = "import" to import from kiro-cli SQLite instead.
 func (a KiroAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("cliproxy auth: configuration is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if opts == nil {
 		opts = &LoginOptions{}
 	}
 
+	if shouldUseKiroImport(opts) {
+		return a.loginFromSQLite(cfg, opts)
+	}
+	return a.loginWithDeviceCode(ctx, cfg, opts)
+}
+
+// loginWithDeviceCode performs the AWS SSO OIDC device code flow.
+func (a KiroAuthenticator) loginWithDeviceCode(ctx context.Context, cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, error) {
+	authSvc := kiro.NewKiroAuth(cfg)
+
+	fmt.Println("Starting Kiro SSO authentication...")
+
+	result, err := authSvc.LoginWithDeviceCode(ctx, kiro.DefaultRegion, opts.NoBrowser)
+	if err != nil {
+		return nil, fmt.Errorf("kiro: SSO login failed: %w", err)
+	}
+
+	expiresAt := ""
+	if result.ExpiresIn > 0 {
+		expiresAt = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+	}
+
+	metadata := map[string]any{
+		"type":          "kiro",
+		"access_token":  result.AccessToken,
+		"refresh_token": result.RefreshToken,
+		"auth_method":   "oidc",
+		"region":        result.Region,
+		"client_id":     result.ClientID,
+		"client_secret": result.ClientSecret,
+		"timestamp":     time.Now().UnixMilli(),
+	}
+	if expiresAt != "" {
+		metadata["expires_at"] = expiresAt
+	}
+
+	tokenStorage := &kiro.KiroTokenStorage{
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+		AuthMethod:   "oidc",
+		Region:       result.Region,
+		ClientID:     result.ClientID,
+		ClientSecret: result.ClientSecret,
+		ExpiresAt:    expiresAt,
+		Type:         "kiro",
+	}
+
+	fileName := fmt.Sprintf("kiro-sso.json")
+
+	log.Debugf("kiro: SSO login successful (region=%s)", result.Region)
+	fmt.Println("\nKiro SSO authentication successful!")
+
+	return &coreauth.Auth{
+		ID:       fileName,
+		Provider: a.Provider(),
+		FileName: fileName,
+		Label:    "Kiro (SSO)",
+		Storage:  tokenStorage,
+		Metadata: metadata,
+	}, nil
+}
+
+// loginFromSQLite imports credentials from the kiro-cli SQLite database.
+func (a KiroAuthenticator) loginFromSQLite(cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, error) {
 	fmt.Println("Importing Kiro credentials from kiro-cli...")
 
 	creds, err := kiro.ReadKiroCliCredentials()
@@ -51,7 +122,6 @@ func (a KiroAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *
 		return nil, fmt.Errorf("kiro: failed to read kiro-cli credentials: %w", err)
 	}
 
-	// Determine auth method based on presence of client_id/client_secret
 	authMethod := "social"
 	if strings.TrimSpace(creds.ClientID) != "" && strings.TrimSpace(creds.ClientSecret) != "" {
 		authMethod = "oidc"
@@ -99,4 +169,11 @@ func (a KiroAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *
 		Storage:  tokenStorage,
 		Metadata: metadata,
 	}, nil
+}
+
+func shouldUseKiroImport(opts *LoginOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(opts.Metadata[kiroLoginModeMetadataKey]), kiroLoginModeImport)
 }
