@@ -220,13 +220,7 @@ func fireQTelemetry(token, conversationID, modelID, profileArn string, stats tel
 // Returns the serialized body and the conversationId used.
 func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, string) {
 	messages := gjson.GetBytes(payload, "messages")
-	systemPrompt := gjson.GetBytes(payload, "system").String()
-	if systemPrompt == "" {
-		first := gjson.GetBytes(payload, "messages.0")
-		if first.Get("role").String() == "system" {
-			systemPrompt = first.Get("content").String()
-		}
-	}
+	systemPrompt := extractKiroSystemPrompt(payload)
 
 	tools := gjson.GetBytes(payload, "tools")
 
@@ -261,34 +255,7 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 		case "assistant":
 			history = append(history, buildKiroAssistantHistoryEntry(msg))
 		case "tool":
-			// Tool results in history: attach to previous user entry or create one
-			tr := map[string]any{
-				"content":   kiroTextContentArray(extractTextContent(msg)),
-				"status":    "success",
-				"toolUseId": msg.Get("tool_call_id").String(),
-			}
-			if len(history) > 0 {
-				last := history[len(history)-1]
-				if uim, ok := last["userInputMessage"].(map[string]any); ok {
-					uctx := uim["userInputMessageContext"].(map[string]any)
-					if existing, ok := uctx["toolResults"].([]map[string]any); ok {
-						uctx["toolResults"] = append(existing, tr)
-					} else {
-						uctx["toolResults"] = []map[string]any{tr}
-					}
-				} else {
-					// Create a user entry to carry tool results
-					history = append(history, map[string]any{
-						"userInputMessage": map[string]any{
-							"content": "",
-							"userInputMessageContext": map[string]any{
-								"envState":    envState,
-								"toolResults": []map[string]any{tr},
-							},
-						},
-					})
-				}
-			}
+			history = appendKiroHistoryToolResults(history, envState, extractToolResults(msg))
 		}
 	}
 
@@ -303,14 +270,11 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 		case "user":
 			currentContent = extractTextContent(msg)
 			currentImages = extractImages(msg)
+			currentToolResults = append(currentToolResults, extractToolResults(msg)...)
 		case "assistant":
 			history = append(history, buildKiroAssistantHistoryEntry(msg))
 		case "tool":
-			currentToolResults = append(currentToolResults, map[string]any{
-				"content":   kiroTextContentArray(extractTextContent(msg)),
-				"status":    "success",
-				"toolUseId": msg.Get("tool_call_id").String(),
-			})
+			currentToolResults = append(currentToolResults, extractToolResults(msg)...)
 		}
 	}
 
@@ -408,12 +372,16 @@ func findLastUserMessageIdx(msgs []gjson.Result, startIdx int) int {
 }
 
 func buildKiroUserHistoryEntry(msg gjson.Result, envState map[string]string) map[string]any {
+	ctx := map[string]any{
+		"envState": envState,
+	}
+	if toolResults := extractToolResults(msg); len(toolResults) > 0 {
+		ctx["toolResults"] = toolResults
+	}
 	return map[string]any{
 		"userInputMessage": map[string]any{
-			"content": extractTextContent(msg),
-			"userInputMessageContext": map[string]any{
-				"envState": envState,
-			},
+			"content":                 extractTextContent(msg),
+			"userInputMessageContext": ctx,
 		},
 	}
 }
@@ -424,10 +392,15 @@ func buildKiroAssistantHistoryEntry(msg gjson.Result) map[string]any {
 		"content": content,
 	}
 
+	var toolUses []map[string]any
 	toolCalls := msg.Get("tool_calls")
 	if toolCalls.IsArray() {
-		var toolUses []map[string]any
 		for _, tc := range toolCalls.Array() {
+			name := tc.Get("function.name").String()
+			toolUseID := tc.Get("id").String()
+			if name == "" || toolUseID == "" {
+				continue
+			}
 			args := tc.Get("function.arguments").String()
 			var input any
 			if err := json.Unmarshal([]byte(args), &input); err != nil {
@@ -435,21 +408,64 @@ func buildKiroAssistantHistoryEntry(msg gjson.Result) map[string]any {
 			}
 			toolUses = append(toolUses, map[string]any{
 				"input":     input,
-				"name":      tc.Get("function.name").String(),
-				"toolUseId": tc.Get("id").String(),
+				"name":      name,
+				"toolUseId": toolUseID,
 			})
 		}
-		if len(toolUses) > 0 {
-			assistant["toolUses"] = toolUses
-			assistant["messageId"] = uuid.New().String()
+	}
+
+	msgContent := msg.Get("content")
+	if msgContent.IsArray() {
+		for _, part := range msgContent.Array() {
+			if part.Get("type").String() != "tool_use" {
+				continue
+			}
+			name := part.Get("name").String()
+			toolUseID := part.Get("id").String()
+			if name == "" || toolUseID == "" {
+				continue
+			}
+			var input any
+			if raw := part.Get("input").Raw; raw != "" {
+				if err := json.Unmarshal([]byte(raw), &input); err != nil {
+					input = map[string]any{}
+				}
+			}
+			if input == nil {
+				input = map[string]any{}
+			}
+			toolUses = append(toolUses, map[string]any{
+				"input":     input,
+				"name":      name,
+				"toolUseId": toolUseID,
+			})
 		}
+	}
+
+	if len(toolUses) > 0 {
+		assistant["toolUses"] = toolUses
+		assistant["messageId"] = uuid.New().String()
 	}
 
 	return map[string]any{"assistantResponseMessage": assistant}
 }
 
+func extractKiroSystemPrompt(payload []byte) string {
+	if systemPrompt := extractTextFromContent(gjson.GetBytes(payload, "system")); systemPrompt != "" {
+		return systemPrompt
+	}
+	first := gjson.GetBytes(payload, "messages.0")
+	if first.Get("role").String() == "system" {
+		return extractTextContent(first)
+	}
+	return ""
+}
+
 func extractTextContent(msg gjson.Result) string {
-	content := msg.Get("content")
+	return extractTextFromContent(msg.Get("content"))
+}
+
+func extractTextFromContent(content gjson.Result) string {
 	if content.Type == gjson.String {
 		return content.String()
 	}
@@ -465,6 +481,79 @@ func extractTextContent(msg gjson.Result) string {
 	return ""
 }
 
+func extractToolResults(msg gjson.Result) []map[string]any {
+	if msg.Get("role").String() == "tool" {
+		toolUseID := msg.Get("tool_call_id").String()
+		if toolUseID == "" {
+			toolUseID = msg.Get("tool_use_id").String()
+		}
+		if toolUseID == "" {
+			return nil
+		}
+		return []map[string]any{buildKiroToolResult(toolUseID, extractTextContent(msg), "success")}
+	}
+
+	content := msg.Get("content")
+	if !content.IsArray() {
+		return nil
+	}
+	var results []map[string]any
+	for _, part := range content.Array() {
+		if part.Get("type").String() != "tool_result" {
+			continue
+		}
+		toolUseID := part.Get("tool_use_id").String()
+		if toolUseID == "" {
+			continue
+		}
+		status := "success"
+		if part.Get("is_error").Bool() {
+			status = "error"
+		}
+		results = append(results, buildKiroToolResult(toolUseID, extractTextFromContent(part.Get("content")), status))
+	}
+	return results
+}
+
+func buildKiroToolResult(toolUseID, content, status string) map[string]any {
+	return map[string]any{
+		"content":   kiroTextContentArray(content),
+		"status":    status,
+		"toolUseId": toolUseID,
+	}
+}
+
+func appendKiroHistoryToolResults(history []map[string]any, envState map[string]string, toolResults []map[string]any) []map[string]any {
+	if len(toolResults) == 0 {
+		return history
+	}
+	if len(history) > 0 {
+		last := history[len(history)-1]
+		if uim, ok := last["userInputMessage"].(map[string]any); ok {
+			uctx, ok := uim["userInputMessageContext"].(map[string]any)
+			if !ok {
+				uctx = map[string]any{}
+				uim["userInputMessageContext"] = uctx
+			}
+			if existing, ok := uctx["toolResults"].([]map[string]any); ok {
+				uctx["toolResults"] = append(existing, toolResults...)
+			} else {
+				uctx["toolResults"] = toolResults
+			}
+			return history
+		}
+	}
+	return append(history, map[string]any{
+		"userInputMessage": map[string]any{
+			"content": "",
+			"userInputMessageContext": map[string]any{
+				"envState":    envState,
+				"toolResults": toolResults,
+			},
+		},
+	})
+}
+
 // extractImages extracts base64 images from OpenAI multimodal content parts
 // and converts them to Kiro format: [{format: "png", source: {bytes: "<base64>"}]
 func extractImages(msg gjson.Result) []map[string]any {
@@ -474,36 +563,49 @@ func extractImages(msg gjson.Result) []map[string]any {
 	}
 	var images []map[string]any
 	for _, p := range content.Array() {
-		if p.Get("type").String() != "image_url" {
-			continue
+		switch p.Get("type").String() {
+		case "image_url":
+			url := p.Get("image_url.url").String()
+			if url == "" {
+				continue
+			}
+			const prefix = ";base64,"
+			idx := strings.Index(url, prefix)
+			if idx < 0 {
+				continue
+			}
+			images = append(images, map[string]any{
+				"format": kiroImageFormatFromMediaType(url[5:idx]),
+				"source": map[string]any{"bytes": url[idx+len(prefix):]},
+			})
+		case "image":
+			source := p.Get("source")
+			if source.Get("type").String() != "base64" {
+				continue
+			}
+			b64 := source.Get("data").String()
+			if b64 == "" {
+				continue
+			}
+			images = append(images, map[string]any{
+				"format": kiroImageFormatFromMediaType(source.Get("media_type").String()),
+				"source": map[string]any{"bytes": b64},
+			})
 		}
-		url := p.Get("image_url.url").String()
-		if url == "" {
-			continue
-		}
-		// Parse data URI: data:<mediatype>;base64,<data>
-		const prefix = ";base64,"
-		idx := strings.Index(url, prefix)
-		if idx < 0 {
-			continue
-		}
-		b64 := url[idx+len(prefix):]
-		// Detect format from media type
-		mediaType := url[5:idx] // after "data:"
-		format := "png"
-		if strings.Contains(mediaType, "jpeg") || strings.Contains(mediaType, "jpg") {
-			format = "jpeg"
-		} else if strings.Contains(mediaType, "gif") {
-			format = "gif"
-		} else if strings.Contains(mediaType, "webp") {
-			format = "webp"
-		}
-		images = append(images, map[string]any{
-			"format": format,
-			"source": map[string]any{"bytes": b64},
-		})
 	}
 	return images
+}
+
+func kiroImageFormatFromMediaType(mediaType string) string {
+	format := "png"
+	if strings.Contains(mediaType, "jpeg") || strings.Contains(mediaType, "jpg") {
+		format = "jpeg"
+	} else if strings.Contains(mediaType, "gif") {
+		format = "gif"
+	} else if strings.Contains(mediaType, "webp") {
+		format = "webp"
+	}
+	return format
 }
 
 func buildKiroToolsContext(tools gjson.Result) []map[string]any {
@@ -525,8 +627,23 @@ func buildKiroToolsContext(tools gjson.Result) []map[string]any {
 	var result []map[string]any
 	for _, t := range tools.Array() {
 		name := t.Get("function.name").String()
+		if name == "" {
+			name = t.Get("name").String()
+		}
+		if name == "" {
+			continue
+		}
 		desc := t.Get("function.description").String()
+		if desc == "" {
+			desc = t.Get("description").String()
+		}
 		params := t.Get("function.parameters")
+		if !params.Exists() {
+			params = t.Get("input_schema")
+		}
+		if !params.Exists() {
+			params = t.Get("inputSchema")
+		}
 		var schema any
 		if params.Exists() {
 			_ = json.Unmarshal([]byte(params.Raw), &schema)
@@ -541,6 +658,17 @@ func buildKiroToolsContext(tools gjson.Result) []map[string]any {
 				"inputSchema": map[string]any{"json": schema},
 			},
 		})
+	}
+	if len(result) == 0 {
+		return []map[string]any{
+			{
+				"toolSpecification": map[string]any{
+					"name":        "no_tool_available",
+					"description": "Placeholder tool when no other tools are available.",
+					"inputSchema": map[string]any{"json": emptySchema},
+				},
+			},
+		}
 	}
 	return result
 }

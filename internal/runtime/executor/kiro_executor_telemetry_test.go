@@ -40,6 +40,83 @@ func TestBuildKiroRequestBody_CurrentImagesAreUserInputMessageField(t *testing.T
 	}
 }
 
+func TestBuildKiroRequestBody_AnthropicToolSchema(t *testing.T) {
+	payload := []byte(`{
+		"tools":[{
+			"name":"Read",
+			"description":"Read a file",
+			"input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
+		}],
+		"messages":[{"role":"user","content":"hello"}]
+	}`)
+	body, _ := buildKiroRequestBody(payload, "auto", "arn:test")
+
+	prefix := "conversationState.currentMessage.userInputMessage.userInputMessageContext.tools.0.toolSpecification"
+	if got := gjson.GetBytes(body, prefix+".name").String(); got != "Read" {
+		t.Fatalf("tool name = %q, want Read; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, prefix+".inputSchema.json.properties.path.type").String(); got != "string" {
+		t.Fatalf("tool schema path type = %q, want string; body=%s", got, string(body))
+	}
+}
+
+func TestBuildKiroRequestBody_SkipsMalformedTools(t *testing.T) {
+	payload := []byte(`{"tools":[{"description":"missing name","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hello"}]}`)
+	body, _ := buildKiroRequestBody(payload, "auto", "arn:test")
+
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.userInputMessageContext.tools.0.toolSpecification.name").String(); got != "no_tool_available" {
+		t.Fatalf("tool name = %q, want no_tool_available; body=%s", got, string(body))
+	}
+}
+
+func TestBuildKiroRequestBody_AnthropicToolUseAndResult(t *testing.T) {
+	payload := []byte(`{
+		"messages":[
+			{"role":"user","content":"read it"},
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"path":"README.md"}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"file contents"}]}
+		]
+	}`)
+	body, _ := buildKiroRequestBody(payload, "auto", "arn:test")
+
+	if got := gjson.GetBytes(body, "conversationState.history.1.assistantResponseMessage.toolUses.0.name").String(); got != "Read" {
+		t.Fatalf("tool use name = %q, want Read; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, "conversationState.history.1.assistantResponseMessage.toolUses.0.input.path").String(); got != "README.md" {
+		t.Fatalf("tool use input path = %q, want README.md; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.userInputMessageContext.toolResults.0.toolUseId").String(); got != "toolu_1" {
+		t.Fatalf("tool result id = %q, want toolu_1; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.userInputMessageContext.toolResults.0.content.0.text").String(); got != "file contents" {
+		t.Fatalf("tool result text = %q, want file contents; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.content").String(); got != "" {
+		t.Fatalf("current content = %q, want empty for tool result; body=%s", got, string(body))
+	}
+}
+
+func TestBuildKiroRequestBody_AnthropicSystemArrayAndImage(t *testing.T) {
+	payload := []byte(`{
+		"system":[{"type":"text","text":"alpha"},{"type":"text","text":" beta","cache_control":{"type":"ephemeral"}}],
+		"messages":[{"role":"user","content":[
+			{"type":"text","text":"describe"},
+			{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"YWJj"}}
+		]}]
+	}`)
+	body, _ := buildKiroRequestBody(payload, "auto", "arn:test")
+
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.content").String(); !strings.HasPrefix(got, "alpha beta\n\ndescribe") {
+		t.Fatalf("current content = %q, want system text prepended; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.images.0.format").String(); got != "jpeg" {
+		t.Fatalf("image format = %q, want jpeg; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.images.0.source.bytes").String(); got != "YWJj" {
+		t.Fatalf("image bytes = %q, want YWJj; body=%s", got, string(body))
+	}
+}
+
 func TestKiroMetadataStorageReadsAndUpdatesNestedToken(t *testing.T) {
 	metadata := map[string]any{
 		"auth_method": "sso",
