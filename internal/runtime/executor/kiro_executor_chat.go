@@ -232,6 +232,7 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 	}
 
 	toolsContext := buildKiroToolsContext(tools)
+	convID := extractKiroConversationID(payload)
 
 	var history []map[string]any
 	var msgs []gjson.Result
@@ -255,7 +256,7 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 		case "user":
 			history = append(history, buildKiroUserHistoryEntry(msg, envState))
 		case "assistant":
-			history = append(history, buildKiroAssistantHistoryEntry(msg))
+			history = append(history, buildKiroAssistantHistoryEntry(msg, convID))
 		case "tool":
 			history = appendKiroHistoryToolResults(history, envState, extractToolResults(msg))
 		}
@@ -274,7 +275,7 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 			currentImages = extractImages(msg)
 			currentToolResults = append(currentToolResults, extractToolResults(msg)...)
 		case "assistant":
-			history = append(history, buildKiroAssistantHistoryEntry(msg))
+			history = append(history, buildKiroAssistantHistoryEntry(msg, convID))
 		case "tool":
 			currentToolResults = append(currentToolResults, extractToolResults(msg)...)
 		}
@@ -327,7 +328,6 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 		userInputMessage["modelId"] = modelID
 	}
 
-	convID := uuid.New().String()
 	conversationState := map[string]any{
 		"chatTriggerType":     "MANUAL",
 		"conversationId":      convID,
@@ -388,7 +388,7 @@ func buildKiroUserHistoryEntry(msg gjson.Result, envState map[string]string) map
 	}
 }
 
-func buildKiroAssistantHistoryEntry(msg gjson.Result) map[string]any {
+func buildKiroAssistantHistoryEntry(msg gjson.Result, conversationID string) map[string]any {
 	content := extractTextContent(msg)
 	assistant := map[string]any{
 		"content": content,
@@ -446,10 +446,66 @@ func buildKiroAssistantHistoryEntry(msg gjson.Result) map[string]any {
 
 	if len(toolUses) > 0 {
 		assistant["toolUses"] = toolUses
-		assistant["messageId"] = uuid.New().String()
+		assistant["messageId"] = stableKiroMessageID(conversationID, toolUses)
 	}
 
 	return map[string]any{"assistantResponseMessage": assistant}
+}
+
+func extractKiroConversationID(payload []byte) string {
+	sessionID := strings.TrimSpace(extractKiroSessionID(payload))
+	if sessionID == "" {
+		return uuid.New().String()
+	}
+	if parsed, err := uuid.Parse(sessionID); err == nil {
+		return parsed.String()
+	}
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("kiro-conversation:"+sessionID)).String()
+}
+
+func extractKiroSessionID(payload []byte) string {
+	for _, path := range []string{
+		"metadata.session_id",
+		"metadata.sessionId",
+		"metadata.conversation_id",
+		"metadata.conversationId",
+		"session_id",
+		"sessionId",
+		"conversation_id",
+		"conversationId",
+	} {
+		if v := strings.TrimSpace(gjson.GetBytes(payload, path).String()); v != "" {
+			return v
+		}
+	}
+
+	userID := gjson.GetBytes(payload, "metadata.user_id")
+	if userID.IsObject() {
+		for _, path := range []string{"session_id", "sessionId", "conversation_id", "conversationId"} {
+			if v := strings.TrimSpace(userID.Get(path).String()); v != "" {
+				return v
+			}
+		}
+	}
+	if raw := strings.TrimSpace(userID.String()); raw != "" && gjson.Valid(raw) {
+		parsed := gjson.Parse(raw)
+		for _, path := range []string{"session_id", "sessionId", "conversation_id", "conversationId"} {
+			if v := strings.TrimSpace(parsed.Get(path).String()); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+func stableKiroMessageID(conversationID string, toolUses []map[string]any) string {
+	parts := []string{"kiro-message", conversationID}
+	for _, toolUse := range toolUses {
+		if id, ok := toolUse["toolUseId"].(string); ok && id != "" {
+			parts = append(parts, id)
+		}
+	}
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(strings.Join(parts, "\x00"))).String()
 }
 
 func extractKiroSystemPrompt(payload []byte) string {

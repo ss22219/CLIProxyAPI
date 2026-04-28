@@ -30,6 +30,60 @@ func TestBuildKiroRequestBody_ReturnsConversationID(t *testing.T) {
 	}
 }
 
+func TestBuildKiroRequestBody_UsesClaudeSessionIDForConversationID(t *testing.T) {
+	sessionID := "11111111-2222-3333-4444-555555555555"
+	payload := []byte(`{"metadata":{"user_id":"{\"session_id\":\"` + sessionID + `\"}"},"messages":[{"role":"user","content":"hello"}]}`)
+
+	body1, convID1 := buildKiroRequestBody(payload, "auto", "arn:test")
+	body2, convID2 := buildKiroRequestBody(payload, "auto", "arn:test")
+
+	if convID1 != sessionID {
+		t.Fatalf("conversationId = %q, want session id %q", convID1, sessionID)
+	}
+	if convID2 != convID1 {
+		t.Fatalf("conversationId changed: %q vs %q", convID1, convID2)
+	}
+	if got := gjson.GetBytes(body1, "conversationState.conversationId").String(); got != sessionID {
+		t.Fatalf("body conversationId = %q, want %q; body=%s", got, sessionID, string(body1))
+	}
+	if got := gjson.GetBytes(body2, "conversationState.conversationId").String(); got != sessionID {
+		t.Fatalf("second body conversationId = %q, want %q; body=%s", got, sessionID, string(body2))
+	}
+}
+
+func TestBuildKiroRequestBody_StableAssistantMessageIDFromSessionAndToolUse(t *testing.T) {
+	payload := []byte(`{
+		"metadata":{"user_id":"{\"session_id\":\"session-a\"}"},
+		"messages":[
+			{"role":"user","content":"read it"},
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"path":"README.md"}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"file contents"}]}
+		]
+	}`)
+
+	body1, convID1 := buildKiroRequestBody(payload, "auto", "arn:test")
+	body2, convID2 := buildKiroRequestBody(payload, "auto", "arn:test")
+	msgID1 := gjson.GetBytes(body1, "conversationState.history.1.assistantResponseMessage.messageId").String()
+	msgID2 := gjson.GetBytes(body2, "conversationState.history.1.assistantResponseMessage.messageId").String()
+
+	if convID1 == "" || convID2 != convID1 {
+		t.Fatalf("conversationId not stable: %q vs %q", convID1, convID2)
+	}
+	if msgID1 == "" || msgID2 != msgID1 {
+		t.Fatalf("messageId not stable: %q vs %q; body=%s", msgID1, msgID2, string(body1))
+	}
+
+	otherPayload := []byte(strings.Replace(string(payload), "session-a", "session-b", 1))
+	otherBody, otherConvID := buildKiroRequestBody(otherPayload, "auto", "arn:test")
+	otherMsgID := gjson.GetBytes(otherBody, "conversationState.history.1.assistantResponseMessage.messageId").String()
+	if otherConvID == convID1 {
+		t.Fatalf("conversationId should change for different session: %q", otherConvID)
+	}
+	if otherMsgID == msgID1 {
+		t.Fatalf("messageId should change for different session: %q", otherMsgID)
+	}
+}
+
 func TestBuildKiroRequestBody_CurrentImagesAreUserInputMessageField(t *testing.T) {
 	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`)
 	body, _ := buildKiroRequestBody(payload, "auto", "arn:test")
