@@ -125,7 +125,24 @@ func kiroAccessToken(auth *cliproxyauth.Auth) string {
 	if auth == nil || auth.Metadata == nil {
 		return ""
 	}
-	if v, ok := auth.Metadata["access_token"].(string); ok {
+	if v, ok := auth.Metadata["access_token"].(string); ok && v != "" {
+		return v
+	}
+	// Auth file stores token nested: {"token":{"access_token":"..."}
+	if tokenMap, ok := auth.Metadata["token"].(map[string]any); ok {
+		if v, ok := tokenMap["access_token"].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// kiroProfileArn extracts the profileArn from auth metadata.
+func kiroProfileArn(auth *cliproxyauth.Auth) string {
+	if auth == nil || auth.Metadata == nil {
+		return ""
+	}
+	if v, ok := auth.Metadata["profile_arn"].(string); ok {
 		return v
 	}
 	return ""
@@ -181,26 +198,32 @@ func metadataToKiroStorage(metadata map[string]any) *kiroauth.KiroTokenStorage {
 	if metadata == nil {
 		return s
 	}
-	if v, ok := metadata["access_token"].(string); ok {
-		s.AccessToken = v
+	// Try flat keys first, then nested "token" map
+	getString := func(key string) string {
+		if v, ok := metadata[key].(string); ok && v != "" {
+			return v
+		}
+		if tokenMap, ok := metadata["token"].(map[string]any); ok {
+			if v, ok := tokenMap[key].(string); ok && v != "" {
+				return v
+			}
+		}
+		return ""
 	}
-	if v, ok := metadata["refresh_token"].(string); ok {
-		s.RefreshToken = v
-	}
-	if v, ok := metadata["auth_method"].(string); ok && v != "" {
+	s.AccessToken = getString("access_token")
+	s.RefreshToken = getString("refresh_token")
+	s.ExpiresAt = getString("expires_at")
+	if v := getString("auth_method"); v != "" {
 		s.AuthMethod = v
 	}
-	if v, ok := metadata["region"].(string); ok && v != "" {
+	if v := getString("region"); v != "" {
 		s.Region = v
 	}
-	if v, ok := metadata["client_id"].(string); ok {
-		s.ClientID = v
+	// idc_region is at top level in auth file
+	if v, ok := metadata["idc_region"].(string); ok && v != "" {
+		s.Region = v
 	}
-	if v, ok := metadata["client_secret"].(string); ok {
-		s.ClientSecret = v
-	}
-	if v, ok := metadata["expires_at"].(string); ok {
-		s.ExpiresAt = v
-	}
+	s.ClientID = getString("client_id")
+	s.ClientSecret = getString("client_secret")
 	return s
 }
