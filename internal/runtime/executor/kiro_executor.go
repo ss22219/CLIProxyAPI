@@ -60,17 +60,11 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		return nil, fmt.Errorf("kiro executor: auth is nil")
 	}
 
-	var refreshToken string
-	if auth.Metadata != nil {
-		if v, ok := auth.Metadata["refresh_token"].(string); ok && strings.TrimSpace(v) != "" {
-			refreshToken = v
-		}
-	}
-	if strings.TrimSpace(refreshToken) == "" {
+	storage := metadataToKiroStorage(auth.Metadata)
+	if strings.TrimSpace(storage.RefreshToken) == "" {
 		return auth, nil
 	}
 
-	storage := metadataToKiroStorage(auth.Metadata)
 	svc := kiroauth.NewKiroAuthWithProxyURL(e.cfg, auth.ProxyURL)
 	result, err := svc.RefreshToken(ctx, storage)
 	if err != nil {
@@ -90,6 +84,7 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	auth.Metadata["auth_method"] = result.AuthMethod
 	auth.Metadata["type"] = "kiro"
 	auth.Metadata["last_refresh"] = time.Now().Format(time.RFC3339)
+	updateNestedKiroToken(auth.Metadata, result)
 
 	// For SSO auth, fetch profileArn if not already set
 	if result.AuthMethod == "oidc" || result.AuthMethod == "sso" {
@@ -102,6 +97,28 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	go kiroauth.SendLoginTelemetry(&http.Client{Timeout: 10 * time.Second}, "")
 
 	return auth, nil
+}
+
+func updateNestedKiroToken(metadata map[string]any, result *kiroauth.KiroTokenStorage) {
+	if metadata == nil || result == nil {
+		return
+	}
+	tokenMap, _ := metadata["token"].(map[string]any)
+	if tokenMap == nil {
+		tokenMap = make(map[string]any)
+	}
+	if result.AccessToken != "" {
+		tokenMap["access_token"] = result.AccessToken
+	}
+	if result.RefreshToken != "" {
+		tokenMap["refresh_token"] = result.RefreshToken
+	}
+	if result.ExpiresAt != "" {
+		tokenMap["expires_at"] = result.ExpiresAt
+	}
+	if len(tokenMap) > 0 {
+		metadata["token"] = tokenMap
+	}
 }
 
 // fetchAndStoreProfileArn fetches profileArn in the background and stores it in auth metadata.
@@ -215,6 +232,9 @@ func metadataToKiroStorage(metadata map[string]any) *kiroauth.KiroTokenStorage {
 	s.ExpiresAt = getString("expires_at")
 	if v := getString("auth_method"); v != "" {
 		s.AuthMethod = v
+	}
+	if strings.EqualFold(s.AuthMethod, "sso") {
+		s.AuthMethod = "oidc"
 	}
 	if v := getString("region"); v != "" {
 		s.Region = v

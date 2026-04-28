@@ -32,6 +32,10 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
+	auth, err = e.ensureFreshKiroAuth(ctx, auth)
+	if err != nil {
+		return resp, err
+	}
 	token := kiroAccessToken(auth)
 	if token == "" {
 		err = statusErr{code: http.StatusUnauthorized, msg: "kiro: missing access token"}
@@ -97,6 +101,10 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
+	auth, err = e.ensureFreshKiroAuth(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
 	token := kiroAccessToken(auth)
 	if token == "" {
 		err = statusErr{code: http.StatusUnauthorized, msg: "kiro: missing access token"}
@@ -158,6 +166,31 @@ func newKiroHTTPRequest(ctx context.Context, token string, body []byte) (*http.R
 	}
 	kiroauth.SetStreamingHeaders(req, token)
 	return req, nil
+}
+
+func (e *KiroExecutor) ensureFreshKiroAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if !shouldRefreshKiroAuth(auth, time.Now()) {
+		return auth, nil
+	}
+	refreshed, err := e.Refresh(ctx, auth)
+	if err != nil {
+		return auth, err
+	}
+	if refreshed == nil {
+		return auth, nil
+	}
+	return refreshed, nil
+}
+
+func shouldRefreshKiroAuth(auth *cliproxyauth.Auth, now time.Time) bool {
+	if auth == nil || auth.Disabled {
+		return false
+	}
+	expiry, ok := auth.ExpirationTime()
+	if !ok || expiry.IsZero() {
+		return false
+	}
+	return !expiry.After(now.Add(5 * time.Minute))
 }
 
 // telemetryStats holds timing data collected during response parsing.
@@ -315,14 +348,14 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 			currentContent = ""
 		}
 	}
-	if len(currentImages) > 0 {
-		uimCtx["images"] = currentImages
-	}
 
 	userInputMessage := map[string]any{
 		"content":                 currentContent,
 		"origin":                  "KIRO_CLI",
 		"userInputMessageContext": uimCtx,
+	}
+	if len(currentImages) > 0 {
+		userInputMessage["images"] = currentImages
 	}
 	if modelID != "" {
 		userInputMessage["modelId"] = modelID

@@ -28,6 +28,79 @@ func TestBuildKiroRequestBody_ReturnsConversationID(t *testing.T) {
 	}
 }
 
+func TestBuildKiroRequestBody_CurrentImagesAreUserInputMessageField(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`)
+	body, _ := buildKiroRequestBody(payload, "auto", "arn:test")
+
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.images.0.source.bytes").String(); got != "aGVsbG8=" {
+		t.Fatalf("current image bytes = %q, want aGVsbG8=; body=%s", got, string(body))
+	}
+	if gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.userInputMessageContext.images").Exists() {
+		t.Fatalf("images must not be nested under userInputMessageContext; body=%s", string(body))
+	}
+}
+
+func TestKiroMetadataStorageReadsAndUpdatesNestedToken(t *testing.T) {
+	metadata := map[string]any{
+		"auth_method": "sso",
+		"idc_region":  "ap-southeast-1",
+		"token": map[string]any{
+			"access_token":  "old-access",
+			"refresh_token": "nested-refresh",
+			"expires_at":    "2026-04-28T10:20:57Z",
+		},
+	}
+
+	storage := metadataToKiroStorage(metadata)
+	if storage.RefreshToken != "nested-refresh" {
+		t.Fatalf("RefreshToken = %q, want nested-refresh", storage.RefreshToken)
+	}
+	if storage.AuthMethod != "oidc" {
+		t.Fatalf("AuthMethod = %q, want oidc", storage.AuthMethod)
+	}
+	if storage.AccessToken != "old-access" {
+		t.Fatalf("AccessToken = %q, want old-access", storage.AccessToken)
+	}
+	if storage.Region != "ap-southeast-1" {
+		t.Fatalf("Region = %q, want ap-southeast-1", storage.Region)
+	}
+
+	updateNestedKiroToken(metadata, &kiroauth.KiroTokenStorage{
+		AccessToken:  "new-access",
+		RefreshToken: "new-refresh",
+		ExpiresAt:    "2026-04-28T11:20:57Z",
+	})
+
+	tokenMap, ok := metadata["token"].(map[string]any)
+	if !ok {
+		t.Fatal("metadata token map missing")
+	}
+	if tokenMap["access_token"] != "new-access" || tokenMap["refresh_token"] != "new-refresh" || tokenMap["expires_at"] != "2026-04-28T11:20:57Z" {
+		t.Fatalf("nested token not updated: %#v", tokenMap)
+	}
+}
+
+func TestShouldRefreshKiroAuthUsesNestedTokenExpiry(t *testing.T) {
+	now := time.Date(2026, time.April, 28, 11, 0, 0, 0, time.UTC)
+	auth := &cliproxyauth.Auth{
+		Provider: "kiro",
+		Metadata: map[string]any{
+			"token": map[string]any{
+				"expires_at": now.Add(4 * time.Minute).Format(time.RFC3339),
+			},
+		},
+	}
+
+	if !shouldRefreshKiroAuth(auth, now) {
+		t.Fatal("expected nested expiry inside refresh lead to require refresh")
+	}
+
+	auth.Metadata["token"].(map[string]any)["expires_at"] = now.Add(10 * time.Minute).Format(time.RFC3339)
+	if shouldRefreshKiroAuth(auth, now) {
+		t.Fatal("did not expect refresh when nested expiry is outside refresh lead")
+	}
+}
+
 func TestSendQTelemetryEvent_UsesStableClientID(t *testing.T) {
 	kiroauth.ResetTelemetryClientIDCache()
 	defer kiroauth.ResetTelemetryClientIDCache()

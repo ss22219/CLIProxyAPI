@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -67,6 +68,24 @@ func TestFetchModels_HeadersWiring(t *testing.T) {
 	}
 	if req.Header.Get("amz-sdk-invocation-id") == "" {
 		t.Error("amz-sdk-invocation-id must be set")
+	}
+}
+
+func TestListAvailableModelsURLIncludesQueryParameters(t *testing.T) {
+	got := listAvailableModelsURL("us-east-1", "arn:aws:codewhisperer:us-east-1:123:profile/A/B")
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	if parsed.Scheme != "https" || parsed.Host != "q.us-east-1.amazonaws.com" || parsed.Path != "/" {
+		t.Fatalf("URL = %q, want q.us-east-1.amazonaws.com root endpoint", got)
+	}
+	query := parsed.Query()
+	if query.Get("origin") != "KIRO_CLI" {
+		t.Fatalf("origin query = %q, want KIRO_CLI", query.Get("origin"))
+	}
+	if query.Get("profileArn") != "arn:aws:codewhisperer:us-east-1:123:profile/A/B" {
+		t.Fatalf("profileArn query = %q", query.Get("profileArn"))
 	}
 }
 

@@ -335,6 +335,7 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		{name: "codex-pro", models: data.CodexPro},
 		{name: "kimi", models: data.Kimi},
 		{name: "antigravity", models: data.Antigravity},
+		{name: "kiro", models: data.Kiro},
 	}
 
 	for _, section := range requiredSections {

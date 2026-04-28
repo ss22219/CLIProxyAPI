@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -35,7 +36,7 @@ func (k *KiroAuth) FetchModels(ctx context.Context, accessToken, profileArn stri
 	}
 
 	region := DefaultRegion
-	url := fmt.Sprintf("https://q.%s.amazonaws.com/", region)
+	endpointURL := listAvailableModelsURL(region, profileArn)
 
 	body := map[string]string{"origin": "KIRO_CLI"}
 	if strings.TrimSpace(profileArn) != "" {
@@ -49,7 +50,7 @@ func (k *KiroAuth) FetchModels(ctx context.Context, accessToken, profileArn stri
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpointURL, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("kiro: create ListAvailableModels request: %w", err)
 	}
@@ -77,4 +78,22 @@ func (k *KiroAuth) FetchModels(ctx context.Context, accessToken, profileArn stri
 	}
 
 	return result.Models, nil
+}
+
+func listAvailableModelsURL(region, profileArn string) string {
+	if strings.TrimSpace(region) == "" {
+		region = DefaultRegion
+	}
+	u := url.URL{
+		Scheme: "https",
+		Host:   fmt.Sprintf("q.%s.amazonaws.com", region),
+		Path:   "/",
+	}
+	q := u.Query()
+	q.Set("origin", "KIRO_CLI")
+	if trimmedArn := strings.TrimSpace(profileArn); trimmedArn != "" {
+		q.Set("profileArn", trimmedArn)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }

@@ -173,6 +173,7 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - codex
 //   - kimi
 //   - antigravity
+//   - kiro
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
