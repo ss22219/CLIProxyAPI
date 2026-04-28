@@ -16,12 +16,14 @@ import (
 
 // SendQTelemetryEvent sends a chatAddMessage telemetry event via the Q API
 // (Bearer token, AmazonCodeWhispererService.SendTelemetryEvent).
+// clientID should be a stable UUID from GetTelemetryClientID().
 func SendQTelemetryEvent(ctx context.Context, httpClient *http.Client, accessToken, conversationID, modelID, profileArn string, responseLength int, timeToFirstChunkMs float64, timeBetweenChunks []float64) error {
 	if strings.TrimSpace(accessToken) == "" {
 		return fmt.Errorf("kiro: access token required for SendTelemetryEvent")
 	}
 
 	osUpper := strings.ToUpper(KiroOSTag())
+	clientID := GetTelemetryClientID()
 
 	body := map[string]any{
 		"clientToken": uuid.New().String(),
@@ -39,7 +41,7 @@ func SendQTelemetryEvent(ctx context.Context, httpClient *http.Client, accessTok
 			"ideCategory":     "CLI",
 			"operatingSystem": osUpper,
 			"product":         "CodeWhisperer",
-			"clientId":        uuid.New().String(),
+			"clientId":        clientID,
 			"ideVersion":      "2.0.1",
 		},
 		"modelId": modelID,
