@@ -53,10 +53,7 @@ func (k *KiroAuth) FetchModels(ctx context.Context, accessToken, profileArn stri
 	if err != nil {
 		return nil, fmt.Errorf("kiro: create ListAvailableModels request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
-	req.Header.Set("x-amz-target", "AmazonCodeWhispererService.ListAvailableModels")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("x-amzn-codewhisperer-optout", "false")
+	SetModelsHeaders(req, accessToken)
 
 	resp, err := k.httpClient.Do(req)
 	if err != nil {

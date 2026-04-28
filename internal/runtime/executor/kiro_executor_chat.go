@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"runtime"
 	"strings"
 
 	"github.com/google/uuid"
+	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
@@ -137,19 +137,13 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
 
-// newKiroHTTPRequest builds an HTTP request for the Kiro API.
+// newKiroHTTPRequest builds an HTTP request for the Kiro GenerateAssistantResponse API.
 func newKiroHTTPRequest(ctx context.Context, token string, body []byte) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kiroBaseURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("x-amz-target", kiroAmzTarget)
-	req.Header.Set("x-amzn-codewhisperer-optout", "false")
-	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
-	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
-	req.Header.Set("User-Agent", "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/linux lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 md/appVersion-2.0.1 app/AmazonQ-For-CLI")
+	kiroauth.SetStreamingHeaders(req, token)
 	return req, nil
 }
 
@@ -166,12 +160,8 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) []byte {
 
 	tools := gjson.GetBytes(payload, "tools")
 
-	osName := "windows"
-	if runtime.GOOS != "windows" {
-		osName = "linux"
-	}
 	envState := map[string]string{
-		"operatingSystem":         osName,
+		"operatingSystem":         kiroauth.KiroOSTag(),
 		"currentWorkingDirectory": ".",
 	}
 
@@ -255,6 +245,10 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) []byte {
 	if currentContent == "" && len(currentToolResults) == 0 {
 		currentContent = "Continue"
 	}
+
+	// Fake work time: rewrite "Current time: ..." to business hours
+	currentContent = kiroauth.FakeWorkTime(currentContent)
+	systemPrompt = kiroauth.FakeWorkTime(systemPrompt)
 
 	// Prepend system prompt
 	if systemPrompt != "" {
