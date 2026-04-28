@@ -37,7 +37,8 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return
 	}
 
-	kiroBody := buildKiroRequestBody(req.Payload, baseModel)
+	profileArn := kiroProfileArn(auth)
+	kiroBody := buildKiroRequestBody(req.Payload, baseModel, profileArn)
 	httpReq, err := newKiroHTTPRequest(ctx, token, kiroBody)
 	if err != nil {
 		return resp, err
@@ -91,7 +92,8 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, err
 	}
 
-	kiroBody := buildKiroRequestBody(req.Payload, baseModel)
+	profileArn := kiroProfileArn(auth)
+	kiroBody := buildKiroRequestBody(req.Payload, baseModel, profileArn)
 	httpReq, err := newKiroHTTPRequest(ctx, token, kiroBody)
 	if err != nil {
 		return nil, err
@@ -147,12 +149,12 @@ func newKiroHTTPRequest(ctx context.Context, token string, body []byte) (*http.R
 	req.Header.Set("x-amzn-codewhisperer-optout", "false")
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
-	req.Header.Set("User-Agent", "aws-sdk-rust/1.3.11 ua/2.1 api/codewhispererstreaming/0.1.13922 os/linux lang/rust/1.92.0 md/appVersion-1.25.0 app/AmazonQ-For-CLI")
+	req.Header.Set("User-Agent", "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/linux lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 md/appVersion-2.0.1 app/AmazonQ-For-CLI")
 	return req, nil
 }
 
 // buildKiroRequestBody converts an OpenAI-format payload into a Kiro conversationState JSON.
-func buildKiroRequestBody(payload []byte, modelID string) []byte {
+func buildKiroRequestBody(payload []byte, modelID, profileArn string) []byte {
 	messages := gjson.GetBytes(payload, "messages")
 	systemPrompt := gjson.GetBytes(payload, "system").String()
 	if systemPrompt == "" {
@@ -219,7 +221,6 @@ func buildKiroRequestBody(payload []byte, modelID string) []byte {
 					history = append(history, map[string]any{
 						"userInputMessage": map[string]any{
 							"content": "",
-							"origin":  "KIRO_CLI",
 							"userInputMessageContext": map[string]any{
 								"envState":    envState,
 								"toolResults": []map[string]any{tr},
@@ -303,6 +304,9 @@ func buildKiroRequestBody(payload []byte, modelID string) []byte {
 	}
 
 	result := map[string]any{"conversationState": conversationState}
+	if profileArn != "" {
+		result["profileArn"] = profileArn
+	}
 	b, err := json.Marshal(result)
 	if err != nil {
 		log.Errorf("kiro: failed to marshal request: %v", err)
@@ -337,7 +341,6 @@ func buildKiroUserHistoryEntry(msg gjson.Result, envState map[string]string) map
 	return map[string]any{
 		"userInputMessage": map[string]any{
 			"content": extractTextContent(msg),
-			"origin":  "KIRO_CLI",
 			"userInputMessageContext": map[string]any{
 				"envState": envState,
 			},
@@ -348,8 +351,7 @@ func buildKiroUserHistoryEntry(msg gjson.Result, envState map[string]string) map
 func buildKiroAssistantHistoryEntry(msg gjson.Result) map[string]any {
 	content := extractTextContent(msg)
 	assistant := map[string]any{
-		"content":   content,
-		"messageId": uuid.New().String(),
+		"content": content,
 	}
 
 	toolCalls := msg.Get("tool_calls")
@@ -369,6 +371,7 @@ func buildKiroAssistantHistoryEntry(msg gjson.Result) map[string]any {
 		}
 		if len(toolUses) > 0 {
 			assistant["toolUses"] = toolUses
+			assistant["messageId"] = uuid.New().String()
 		}
 	}
 
@@ -463,18 +466,8 @@ func parseKiroEventStream(data []byte) (string, []kiroToolCall) {
 		case "content":
 			content.WriteString(evt.data)
 		case "toolUse":
-			if cur != nil && cur.ID != evt.toolUseID {
-				toolCalls = append(toolCalls, *cur)
-				cur = nil
-			}
-			if cur == nil {
-				cur = &kiroToolCall{ID: evt.toolUseID, Name: evt.name}
-			}
-			cur.Args += evt.data
-			if evt.stop {
-				toolCalls = append(toolCalls, *cur)
-				cur = nil
-			}
+			// Initial tool use event — start a new tool call
+			cur = &kiroToolCall{ID: evt.toolUseID, Name: evt.name}
 		case "toolUseInput":
 			if cur != nil {
 				cur.Args += evt.data
@@ -566,34 +559,26 @@ func findKiroJSONEnd(s string, start int) int {
 func classifyKiroEvent(jsonStr string) (kiroEvent, bool) {
 	r := gjson.Parse(jsonStr)
 
+	// Content event: has "content", no "followupPrompt"
 	if r.Get("content").Exists() && !r.Get("followupPrompt").Exists() {
 		return kiroEvent{evtType: "content", data: r.Get("content").String()}, true
 	}
-	if r.Get("name").Exists() && r.Get("toolUseId").Exists() {
-		evt := kiroEvent{
-			evtType:   "toolUse",
-			name:      r.Get("name").String(),
-			toolUseID: r.Get("toolUseId").String(),
-			stop:      r.Get("stop").Bool(),
+	// Tool events: all have "name" + "toolUseId" per spec
+	if r.Get("toolUseId").Exists() {
+		// Stop event: has "stop": true
+		if r.Get("stop").Bool() {
+			return kiroEvent{evtType: "toolUseStop", stop: true, name: r.Get("name").String(), toolUseID: r.Get("toolUseId").String()}, true
 		}
+		// Input event: has "input" field
 		if inp := r.Get("input"); inp.Exists() {
-			if inp.Type == gjson.String {
-				evt.data = inp.String()
-			} else {
-				evt.data = inp.Raw
+			data := inp.String()
+			if inp.Type != gjson.String {
+				data = inp.Raw
 			}
+			return kiroEvent{evtType: "toolUseInput", data: data, name: r.Get("name").String(), toolUseID: r.Get("toolUseId").String()}, true
 		}
-		return evt, true
-	}
-	if r.Get("input").Exists() && !r.Get("name").Exists() {
-		inp := r.Get("input")
-		if inp.Type == gjson.String {
-			return kiroEvent{evtType: "toolUseInput", data: inp.String()}, true
-		}
-		return kiroEvent{evtType: "toolUseInput", data: inp.Raw}, true
-	}
-	if r.Get("stop").Exists() {
-		return kiroEvent{evtType: "toolUseStop", stop: true}, true
+		// Initial tool use event: name + toolUseId, no input, no stop
+		return kiroEvent{evtType: "toolUse", name: r.Get("name").String(), toolUseID: r.Get("toolUseId").String()}, true
 	}
 	return kiroEvent{}, false
 }
@@ -659,24 +644,7 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 				helps.AppendAPIResponseChunk(ctx, cfg, chunk)
 				out <- cliproxyexecutor.StreamChunk{Payload: chunk}
 			case "toolUse":
-				if cur != nil && cur.ID != evt.toolUseID {
-					chunk := buildOpenAISSEToolCallChunk(chatID, model, tcIndex, cur)
-					helps.AppendAPIResponseChunk(ctx, cfg, chunk)
-					out <- cliproxyexecutor.StreamChunk{Payload: chunk}
-					tcIndex++
-					cur = nil
-				}
-				if cur == nil {
-					cur = &kiroToolCall{ID: evt.toolUseID, Name: evt.name}
-				}
-				cur.Args += evt.data
-				if evt.stop {
-					chunk := buildOpenAISSEToolCallChunk(chatID, model, tcIndex, cur)
-					helps.AppendAPIResponseChunk(ctx, cfg, chunk)
-					out <- cliproxyexecutor.StreamChunk{Payload: chunk}
-					tcIndex++
-					cur = nil
-				}
+				cur = &kiroToolCall{ID: evt.toolUseID, Name: evt.name}
 			case "toolUseInput":
 				if cur != nil {
 					cur.Args += evt.data

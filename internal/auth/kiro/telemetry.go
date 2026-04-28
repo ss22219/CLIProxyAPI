@@ -23,7 +23,7 @@ const (
 	cognitoPoolID     = "us-east-1:820fd6d1-95c0-4ca4-bffb-3f01d32da842"
 	cognitoRegion     = "us-east-1"
 	telemetryProduct  = "CodeWhisperer for Terminal"
-	telemetryVersion  = "1.25.0"
+	telemetryVersion  = "2.0.1"
 )
 
 // --- Cognito credential cache (process-wide) ---
@@ -271,8 +271,8 @@ func signV4(req *http.Request, payload []byte, creds *awsCreds) {
 	payloadHash := sha256Hex(payload)
 
 	req.Header.Set("x-amz-date", amzDate)
-	req.Header.Set("x-amz-user-agent", "aws-sdk-rust/1.3.11 ua/2.1 api/toolkittelemetry/1.0.0 os/linux lang/rust/1.92.0 app/AmazonQ-For-CLI")
-	req.Header.Set("user-agent", "aws-sdk-rust/1.3.11 os/linux lang/rust/1.92.0")
+	req.Header.Set("x-amz-user-agent", "aws-sdk-rust/1.3.14 ua/2.1 api/toolkittelemetry/1.0.0 os/linux lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 app/AmazonQ-For-CLI")
+	req.Header.Set("user-agent", "aws-sdk-rust/1.3.14 os/linux lang/rust/1.92.0")
 	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	if creds.SessionToken != "" {
@@ -295,7 +295,7 @@ func signV4(req *http.Request, payload []byte, creds *awsCreds) {
 	if creds.SessionToken != "" {
 		canonicalHeaders += "x-amz-security-token:" + creds.SessionToken + "\n"
 	}
-	canonicalHeaders += "x-amz-user-agent:aws-sdk-rust/1.3.11 ua/2.1 api/toolkittelemetry/1.0.0 os/linux lang/rust/1.92.0 app/AmazonQ-For-CLI\n"
+	canonicalHeaders += "x-amz-user-agent:aws-sdk-rust/1.3.14 ua/2.1 api/toolkittelemetry/1.0.0 os/linux lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 app/AmazonQ-For-CLI\n"
 
 	canonicalRequest := strings.Join([]string{
 		"POST", "/metrics", "", canonicalHeaders, signedHeaders, payloadHash,
