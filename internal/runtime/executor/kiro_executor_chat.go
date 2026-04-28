@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
@@ -38,7 +39,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	}
 
 	profileArn := kiroProfileArn(auth)
-	kiroBody := buildKiroRequestBody(req.Payload, baseModel, profileArn)
+	kiroBody, conversationID := buildKiroRequestBody(req.Payload, baseModel, profileArn)
 	httpReq, err := newKiroHTTPRequest(ctx, token, kiroBody)
 	if err != nil {
 		return resp, err
@@ -56,6 +57,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue,
 	})
 
+	t0 := time.Now()
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -63,6 +65,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
+	ttfc := float64(time.Since(t0).Milliseconds())
 
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 	body, _ := io.ReadAll(httpResp.Body)
@@ -77,6 +80,10 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	openAIResp := buildOpenAINonStreamResponse(req.Model, content, toolCalls)
 	reporter.EnsurePublished(ctx)
 	resp = cliproxyexecutor.Response{Payload: openAIResp, Headers: httpResp.Header.Clone()}
+
+	// Fire-and-forget Q API telemetry
+	go fireQTelemetry(token, conversationID, baseModel, profileArn, len(content), ttfc, nil)
+
 	return resp, nil
 }
 
@@ -93,7 +100,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	}
 
 	profileArn := kiroProfileArn(auth)
-	kiroBody := buildKiroRequestBody(req.Payload, baseModel, profileArn)
+	kiroBody, conversationID := buildKiroRequestBody(req.Payload, baseModel, profileArn)
 	httpReq, err := newKiroHTTPRequest(ctx, token, kiroBody)
 	if err != nil {
 		return nil, err
@@ -111,6 +118,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue,
 	})
 
+	t0 := time.Now()
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -131,8 +139,10 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	go func() {
 		defer close(out)
 		defer func() { _ = httpResp.Body.Close() }()
-		streamKiroToOpenAISSE(ctx, e.cfg, httpResp.Body, req.Model, out)
+		respLen := streamKiroToOpenAISSE(ctx, e.cfg, httpResp.Body, req.Model, out)
 		reporter.EnsurePublished(ctx)
+		ttfc := float64(time.Since(t0).Milliseconds())
+		go fireQTelemetry(token, conversationID, baseModel, profileArn, respLen, ttfc, nil)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
@@ -147,8 +157,19 @@ func newKiroHTTPRequest(ctx context.Context, token string, body []byte) (*http.R
 	return req, nil
 }
 
+// fireQTelemetry sends Q API telemetry in a fire-and-forget manner.
+// Errors are logged at debug level and never propagated.
+func fireQTelemetry(token, conversationID, modelID, profileArn string, responseLength int, ttfcMs float64, timeBetweenChunks []float64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := kiroauth.SendQTelemetryEvent(ctx, &http.Client{Timeout: 10 * time.Second}, token, conversationID, modelID, profileArn, responseLength, ttfcMs, timeBetweenChunks); err != nil {
+		log.Debugf("kiro: Q telemetry failed (non-fatal): %v", err)
+	}
+}
+
 // buildKiroRequestBody converts an OpenAI-format payload into a Kiro conversationState JSON.
-func buildKiroRequestBody(payload []byte, modelID, profileArn string) []byte {
+// Returns the serialized body and the conversationId used.
+func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, string) {
 	messages := gjson.GetBytes(payload, "messages")
 	systemPrompt := gjson.GetBytes(payload, "system").String()
 	if systemPrompt == "" {
@@ -224,6 +245,7 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) []byte {
 
 	// Build current message from remaining messages (lastUserIdx to end)
 	var currentContent string
+	var currentImages []map[string]any
 	var currentToolResults []map[string]any
 	for i := lastUserIdx; i < len(msgs); i++ {
 		msg := msgs[i]
@@ -231,6 +253,7 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) []byte {
 		switch role {
 		case "user":
 			currentContent = extractTextContent(msg)
+			currentImages = extractImages(msg)
 		case "assistant":
 			history = append(history, buildKiroAssistantHistoryEntry(msg))
 		case "tool":
@@ -276,6 +299,9 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) []byte {
 			currentContent = ""
 		}
 	}
+	if len(currentImages) > 0 {
+		uimCtx["images"] = currentImages
+	}
 
 	userInputMessage := map[string]any{
 		"content":                 currentContent,
@@ -286,9 +312,10 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) []byte {
 		userInputMessage["modelId"] = modelID
 	}
 
+	convID := uuid.New().String()
 	conversationState := map[string]any{
 		"chatTriggerType":     "MANUAL",
-		"conversationId":      uuid.New().String(),
+		"conversationId":      convID,
 		"currentMessage":      map[string]any{"userInputMessage": userInputMessage},
 		"agentContinuationId": uuid.New().String(),
 		"agentTaskType":       "vibe",
@@ -304,9 +331,9 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) []byte {
 	b, err := json.Marshal(result)
 	if err != nil {
 		log.Errorf("kiro: failed to marshal request: %v", err)
-		return []byte("{}")
+		return []byte("{}"), convID
 	}
-	return b
+	return b, convID
 }
 
 // findLastUserMessageIdx finds the index of the last "user" or "tool" batch start.
@@ -387,6 +414,47 @@ func extractTextContent(msg gjson.Result) string {
 		return strings.Join(parts, "")
 	}
 	return ""
+}
+
+// extractImages extracts base64 images from OpenAI multimodal content parts
+// and converts them to Kiro format: [{format: "png", source: {bytes: "<base64>"}]
+func extractImages(msg gjson.Result) []map[string]any {
+	content := msg.Get("content")
+	if !content.IsArray() {
+		return nil
+	}
+	var images []map[string]any
+	for _, p := range content.Array() {
+		if p.Get("type").String() != "image_url" {
+			continue
+		}
+		url := p.Get("image_url.url").String()
+		if url == "" {
+			continue
+		}
+		// Parse data URI: data:<mediatype>;base64,<data>
+		const prefix = ";base64,"
+		idx := strings.Index(url, prefix)
+		if idx < 0 {
+			continue
+		}
+		b64 := url[idx+len(prefix):]
+		// Detect format from media type
+		mediaType := url[5:idx] // after "data:"
+		format := "png"
+		if strings.Contains(mediaType, "jpeg") || strings.Contains(mediaType, "jpg") {
+			format = "jpeg"
+		} else if strings.Contains(mediaType, "gif") {
+			format = "gif"
+		} else if strings.Contains(mediaType, "webp") {
+			format = "webp"
+		}
+		images = append(images, map[string]any{
+			"format": format,
+			"source": map[string]any{"bytes": b64},
+		})
+	}
+	return images
 }
 
 func buildKiroToolsContext(tools gjson.Result) []map[string]any {
@@ -616,7 +684,7 @@ func buildOpenAINonStreamResponse(model, content string, toolCalls []kiroToolCal
 	return b
 }
 
-func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, out chan<- cliproxyexecutor.StreamChunk) {
+func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, out chan<- cliproxyexecutor.StreamChunk) int {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(nil, 52_428_800)
 	var buf strings.Builder
@@ -624,6 +692,7 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 
 	var cur *kiroToolCall
 	tcIndex := 0
+	totalContentLen := 0
 
 	flush := func() {
 		if buf.Len() == 0 {
@@ -637,6 +706,7 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 				chunk := buildOpenAISSEChunk(chatID, model, evt.data, "", nil)
 				helps.AppendAPIResponseChunk(ctx, cfg, chunk)
 				out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+				totalContentLen += len(evt.data)
 			case "toolUse":
 				cur = &kiroToolCall{ID: evt.toolUseID, Name: evt.name}
 			case "toolUseInput":
@@ -675,7 +745,7 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 		finishReason = "tool_calls"
 	}
 	out <- cliproxyexecutor.StreamChunk{Payload: buildOpenAISSEChunk(chatID, model, "", finishReason, nil)}
-	out <- cliproxyexecutor.StreamChunk{Payload: []byte("data: [DONE]\n\n")}
+	return totalContentLen
 }
 
 func buildOpenAISSEChunk(id, model, content, finishReason string, toolCalls []map[string]any) []byte {
@@ -699,7 +769,7 @@ func buildOpenAISSEChunk(id, model, content, finishReason string, toolCalls []ma
 		"choices": []map[string]any{choice},
 	}
 	b, _ := json.Marshal(chunk)
-	return append([]byte("data: "), append(b, '\n', '\n')...)
+	return b
 }
 
 func buildOpenAISSEToolCallChunk(id, model string, index int, tc *kiroToolCall) []byte {
