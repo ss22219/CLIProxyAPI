@@ -20,6 +20,7 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -44,7 +45,8 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	}
 
 	profileArn := kiroProfileArn(auth)
-	kiroBody, conversationID := buildKiroRequestBody(req.Payload, baseModel, profileArn)
+	requestPayload := kiroSourcePayload(baseModel, req.Payload, opts)
+	kiroBody, conversationID := buildKiroRequestBody(requestPayload, baseModel, profileArn)
 	httpReq, err := newKiroHTTPRequest(ctx, token, kiroBody)
 	if err != nil {
 		return resp, err
@@ -83,7 +85,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 
 	content, toolCalls := parseKiroEventStream(body)
 	openAIResp := buildOpenAINonStreamResponse(req.Model, content, toolCalls)
-	outResp := translateKiroNonStreamResponse(ctx, req.Model, openAIResp, req.Payload, opts)
+	outResp := translateKiroNonStreamResponse(ctx, req.Model, openAIResp, requestPayload, opts)
 	reporter.EnsurePublished(ctx)
 	resp = cliproxyexecutor.Response{Payload: outResp, Headers: httpResp.Header.Clone()}
 
@@ -114,7 +116,8 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	}
 
 	profileArn := kiroProfileArn(auth)
-	kiroBody, conversationID := buildKiroRequestBody(req.Payload, baseModel, profileArn)
+	requestPayload := kiroSourcePayload(baseModel, req.Payload, opts)
+	kiroBody, conversationID := buildKiroRequestBody(requestPayload, baseModel, profileArn)
 	httpReq, err := newKiroHTTPRequest(ctx, token, kiroBody)
 	if err != nil {
 		return nil, err
@@ -153,7 +156,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	go func() {
 		defer close(out)
 		defer func() { _ = httpResp.Body.Close() }()
-		stats := streamKiroToSourceSSE(ctx, e.cfg, httpResp.Body, req.Model, req.Payload, opts, t0, out)
+		stats := streamKiroToSourceSSE(ctx, e.cfg, httpResp.Body, req.Model, requestPayload, opts, t0, out)
 		reporter.EnsurePublished(ctx)
 		go fireQTelemetry(token, conversationID, baseModel, profileArn, stats)
 	}()
@@ -168,6 +171,43 @@ func newKiroHTTPRequest(ctx context.Context, token string, body []byte) (*http.R
 	}
 	kiroauth.SetStreamingHeaders(req, token)
 	return req, nil
+}
+
+func kiroSourcePayload(model string, payload []byte, opts cliproxyexecutor.Options) []byte {
+	if opts.SourceFormat != sdktranslator.FormatOpenAIResponse {
+		return payload
+	}
+	translated := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatOpenAI, model, payload, opts.Stream)
+	return preserveKiroRequestMetadata(payload, translated)
+}
+
+func preserveKiroRequestMetadata(original, translated []byte) []byte {
+	out := translated
+	for _, path := range []string{
+		"metadata",
+		"session_id",
+		"sessionId",
+		"conversation_id",
+		"conversationId",
+	} {
+		if gjson.GetBytes(out, path).Exists() {
+			continue
+		}
+		value := gjson.GetBytes(original, path)
+		if !value.Exists() {
+			continue
+		}
+		var err error
+		if value.IsObject() || value.IsArray() {
+			out, err = sjson.SetRawBytes(out, path, []byte(value.Raw))
+		} else {
+			out, err = sjson.SetBytes(out, path, value.Value())
+		}
+		if err != nil {
+			log.Debugf("kiro: failed to preserve request metadata %s: %v", path, err)
+		}
+	}
+	return out
 }
 
 func (e *KiroExecutor) ensureFreshKiroAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -908,11 +948,17 @@ func buildOpenAINonStreamResponse(model, content string, toolCalls []kiroToolCal
 	}
 
 	resp := map[string]any{
-		"id":     "chatcmpl-" + uuid.New().String()[:8],
-		"object": "chat.completion",
-		"model":  model,
+		"id":      "chatcmpl-" + uuid.New().String()[:8],
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   model,
 		"choices": []map[string]any{
 			{"index": 0, "message": msg, "finish_reason": finishReason},
+		},
+		"usage": map[string]any{
+			"prompt_tokens":     0,
+			"completion_tokens": 0,
+			"total_tokens":      0,
 		},
 	}
 	b, _ := json.Marshal(resp)
@@ -920,22 +966,35 @@ func buildOpenAINonStreamResponse(model, content string, toolCalls []kiroToolCal
 }
 
 func translateKiroNonStreamResponse(ctx context.Context, model string, openAIResp, requestPayload []byte, opts cliproxyexecutor.Options) []byte {
-	if opts.SourceFormat != sdktranslator.FormatClaude {
+	switch opts.SourceFormat {
+	case sdktranslator.FormatClaude:
+		originalRequest := opts.OriginalRequest
+		if len(originalRequest) == 0 {
+			originalRequest = requestPayload
+		}
+		var param any
+		return sdktranslator.TranslateNonStream(ctx, sdktranslator.FormatOpenAI, sdktranslator.FormatClaude, model, originalRequest, requestPayload, openAIResp, &param)
+	case sdktranslator.FormatOpenAIResponse:
+		originalRequest := opts.OriginalRequest
+		if len(originalRequest) == 0 {
+			originalRequest = requestPayload
+		}
+		var param any
+		return sdktranslator.TranslateNonStream(ctx, sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAIResponse, model, originalRequest, originalRequest, openAIResp, &param)
+	default:
 		return openAIResp
 	}
-	originalRequest := opts.OriginalRequest
-	if len(originalRequest) == 0 {
-		originalRequest = requestPayload
-	}
-	var param any
-	return sdktranslator.TranslateNonStream(ctx, sdktranslator.FormatOpenAI, sdktranslator.FormatClaude, model, originalRequest, requestPayload, openAIResp, &param)
 }
 
 func streamKiroToSourceSSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, requestPayload []byte, opts cliproxyexecutor.Options, t0 time.Time, out chan<- cliproxyexecutor.StreamChunk) telemetryStats {
-	if opts.SourceFormat == sdktranslator.FormatClaude {
+	switch opts.SourceFormat {
+	case sdktranslator.FormatClaude:
 		return streamKiroToClaudeSSE(ctx, cfg, body, model, requestPayload, opts, t0, out)
+	case sdktranslator.FormatOpenAIResponse:
+		return streamKiroToOpenAIResponsesSSE(ctx, cfg, body, model, requestPayload, opts, t0, out)
+	default:
+		return streamKiroToOpenAISSE(ctx, cfg, body, model, t0, out)
 	}
-	return streamKiroToOpenAISSE(ctx, cfg, body, model, t0, out)
 }
 
 func streamKiroToClaudeSSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, requestPayload []byte, opts cliproxyexecutor.Options, t0 time.Time, out chan<- cliproxyexecutor.StreamChunk) telemetryStats {
@@ -961,6 +1020,34 @@ func streamKiroToClaudeSSE(ctx context.Context, cfg *config.Config, body io.Read
 		}
 	}
 	for _, translated := range sdktranslator.TranslateStream(ctx, sdktranslator.FormatOpenAI, sdktranslator.FormatClaude, model, originalRequest, requestPayload, []byte("data: [DONE]"), &param) {
+		out <- cliproxyexecutor.StreamChunk{Payload: translated}
+	}
+	return <-statsCh
+}
+
+func streamKiroToOpenAIResponsesSSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, requestPayload []byte, opts cliproxyexecutor.Options, t0 time.Time, out chan<- cliproxyexecutor.StreamChunk) telemetryStats {
+	openAIChunks := make(chan cliproxyexecutor.StreamChunk)
+	statsCh := make(chan telemetryStats, 1)
+	go func() {
+		statsCh <- streamKiroToOpenAISSE(ctx, cfg, body, model, t0, openAIChunks)
+		close(openAIChunks)
+	}()
+
+	originalRequest := opts.OriginalRequest
+	if len(originalRequest) == 0 {
+		originalRequest = requestPayload
+	}
+	var param any
+	for chunk := range openAIChunks {
+		if chunk.Err != nil {
+			out <- chunk
+			continue
+		}
+		for _, translated := range sdktranslator.TranslateStream(ctx, sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAIResponse, model, originalRequest, originalRequest, openAIStreamData(chunk.Payload), &param) {
+			out <- cliproxyexecutor.StreamChunk{Payload: translated}
+		}
+	}
+	for _, translated := range sdktranslator.TranslateStream(ctx, sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAIResponse, model, originalRequest, originalRequest, []byte("data: [DONE]"), &param) {
 		out <- cliproxyexecutor.StreamChunk{Payload: translated}
 	}
 	return <-statsCh
@@ -1051,7 +1138,7 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 	if tcIndex > 0 {
 		finishReason = "tool_calls"
 	}
-	out <- cliproxyexecutor.StreamChunk{Payload: buildOpenAISSEChunk(chatID, model, "", finishReason, nil)}
+	out <- cliproxyexecutor.StreamChunk{Payload: buildOpenAISSEFinalChunk(chatID, model, finishReason)}
 
 	if timeBetweenChunks == nil {
 		timeBetweenChunks = []float64{}
@@ -1080,11 +1167,20 @@ func buildOpenAISSEChunk(id, model, content, finishReason string, toolCalls []ma
 	chunk := map[string]any{
 		"id":      id,
 		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
 		"model":   model,
 		"choices": []map[string]any{choice},
 	}
 	b, _ := json.Marshal(chunk)
 	return b
+}
+
+func buildOpenAISSEFinalChunk(id, model, finishReason string) []byte {
+	chunk := buildOpenAISSEChunk(id, model, "", finishReason, nil)
+	chunk, _ = sjson.SetBytes(chunk, "usage.prompt_tokens", 0)
+	chunk, _ = sjson.SetBytes(chunk, "usage.completion_tokens", 0)
+	chunk, _ = sjson.SetBytes(chunk, "usage.total_tokens", 0)
+	return chunk
 }
 
 func buildOpenAISSEToolCallChunk(id, model string, index int, tc *kiroToolCall) []byte {

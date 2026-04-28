@@ -27,6 +27,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
+	kiroAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -2176,6 +2177,120 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+func (h *Handler) RequestKiroToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	fmt.Println("Initializing Kiro authentication...")
+
+	state := fmt.Sprintf("kiro-%d", time.Now().UnixNano())
+	region := strings.TrimSpace(c.Query("region"))
+	if region == "" {
+		region = kiroAuth.DefaultRegion
+	}
+
+	authSvc := kiroAuth.NewKiroAuth(h.cfg)
+
+	registration, errRegister := authSvc.RegisterClient(ctx, region)
+	if errRegister != nil {
+		log.Errorf("Failed to register Kiro OIDC client: %v", errRegister)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register kiro client"})
+		return
+	}
+
+	deviceAuth, errStartDeviceFlow := authSvc.StartDeviceAuthorization(ctx, region, registration.ClientID, registration.ClientSecret)
+	if errStartDeviceFlow != nil {
+		log.Errorf("Failed to start Kiro device authorization: %v", errStartDeviceFlow)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		return
+	}
+
+	authURL := strings.TrimSpace(deviceAuth.VerificationURIComplete)
+	if authURL == "" {
+		authURL = strings.TrimSpace(deviceAuth.VerificationURI)
+	}
+	if authURL == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "authorization url is empty"})
+		return
+	}
+
+	RegisterOAuthSession(state, "kiro")
+
+	go func() {
+		fmt.Println("Waiting for Kiro authentication...")
+
+		tokenResp, errPoll := authSvc.PollForToken(ctx, region, registration, deviceAuth)
+		if errPoll != nil {
+			log.Errorf("Kiro authentication failed: %v", errPoll)
+			SetOAuthSessionError(state, "Authentication failed")
+			return
+		}
+
+		expiresAt := ""
+		if tokenResp.ExpiresIn > 0 {
+			expiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+		}
+
+		tokenStorage := &kiroAuth.KiroTokenStorage{
+			AccessToken:  tokenResp.AccessToken,
+			RefreshToken: tokenResp.RefreshToken,
+			AuthMethod:   "oidc",
+			Region:       region,
+			ClientID:     registration.ClientID,
+			ClientSecret: registration.ClientSecret,
+			ExpiresAt:    expiresAt,
+			Type:         "kiro",
+		}
+
+		metadata := map[string]any{
+			"type":          "kiro",
+			"access_token":  tokenResp.AccessToken,
+			"refresh_token": tokenResp.RefreshToken,
+			"auth_method":   "oidc",
+			"region":        region,
+			"client_id":     registration.ClientID,
+			"client_secret": registration.ClientSecret,
+			"timestamp":     time.Now().UnixMilli(),
+		}
+		if expiresAt != "" {
+			metadata["expires_at"] = expiresAt
+		}
+		if profileArn, errProfile := authSvc.FetchProfileArn(ctx, tokenResp.AccessToken); errProfile != nil {
+			log.Debugf("kiro: FetchProfileArn failed after login: %v", errProfile)
+		} else if strings.TrimSpace(profileArn) != "" {
+			metadata["profile_arn"] = strings.TrimSpace(profileArn)
+		}
+
+		fileName := "kiro-sso.json"
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "kiro",
+			FileName: fileName,
+			Label:    "Kiro (SSO)",
+			Storage:  tokenStorage,
+			Metadata: metadata,
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save Kiro authentication tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+
+		CompleteOAuthSession(state)
+		CompleteOAuthSessionsByProvider("kiro")
+		fmt.Printf("Kiro authentication successful! Token saved to %s\n", savedPath)
+	}()
+
+	c.JSON(200, gin.H{
+		"status":           "ok",
+		"url":              authURL,
+		"state":            state,
+		"user_code":        deviceAuth.UserCode,
+		"verification_uri": deviceAuth.VerificationURI,
+	})
 }
 
 type projectSelectionRequiredError struct{}

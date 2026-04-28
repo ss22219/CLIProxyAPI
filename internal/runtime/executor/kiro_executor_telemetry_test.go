@@ -194,6 +194,57 @@ func TestTranslateKiroNonStreamResponseToClaudeIncludesUsage(t *testing.T) {
 	}
 }
 
+func TestKiroSourcePayloadConvertsOpenAIResponsesInput(t *testing.T) {
+	original := []byte(`{"model":"claude-sonnet-4.5","input":"Return exactly: pong","metadata":{"session_id":"kiro-session-1"}}`)
+	payload := kiroSourcePayload("claude-sonnet-4.5", original, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+	})
+
+	if got := gjson.GetBytes(payload, "messages.0.content").String(); got != "Return exactly: pong" {
+		t.Fatalf("converted content = %q, want prompt; payload=%s", got, string(payload))
+	}
+	if got := gjson.GetBytes(payload, "metadata.session_id").String(); got != "kiro-session-1" {
+		t.Fatalf("metadata session_id = %q, want kiro-session-1; payload=%s", got, string(payload))
+	}
+
+	body1, convID1 := buildKiroRequestBody(payload, "claude-sonnet-4.5", "")
+	body2, convID2 := buildKiroRequestBody(payload, "claude-sonnet-4.5", "")
+	if convID1 == "" || convID1 != convID2 {
+		t.Fatalf("conversation IDs should be stable, got %q and %q", convID1, convID2)
+	}
+	if got := gjson.GetBytes(body1, "conversationState.currentMessage.userInputMessage.content").String(); got != "Return exactly: pong" {
+		t.Fatalf("kiro current content = %q, want prompt; body=%s", got, string(body1))
+	}
+	if got := gjson.GetBytes(body2, "conversationState.conversationId").String(); got != convID1 {
+		t.Fatalf("body conversationId = %q, want %q", got, convID1)
+	}
+}
+
+func TestTranslateKiroNonStreamResponseToOpenAIResponsesIncludesUsage(t *testing.T) {
+	original := []byte(`{"model":"claude-sonnet-4.5","input":"Return exactly: pong","max_output_tokens":16}`)
+	requestPayload := kiroSourcePayload("claude-sonnet-4.5", original, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+	})
+	openAIResp := buildOpenAINonStreamResponse("claude-sonnet-4.5", "pong", nil)
+	out := translateKiroNonStreamResponse(context.Background(), "claude-sonnet-4.5", openAIResp, requestPayload, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: original,
+	})
+
+	if got := gjson.GetBytes(out, "object").String(); got != "response" {
+		t.Fatalf("object = %q, want response; body=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "output.0.content.0.text").String(); got != "pong" {
+		t.Fatalf("response text = %q, want pong; body=%s", got, string(out))
+	}
+	if !gjson.GetBytes(out, "usage.input_tokens").Exists() {
+		t.Fatalf("usage.input_tokens missing; body=%s", string(out))
+	}
+	if !gjson.GetBytes(out, "usage.output_tokens").Exists() {
+		t.Fatalf("usage.output_tokens missing; body=%s", string(out))
+	}
+}
+
 func TestStreamKiroToClaudeSSEIncludesMessageUsage(t *testing.T) {
 	out := make(chan cliproxyexecutor.StreamChunk, 32)
 	stats := streamKiroToClaudeSSE(context.Background(), nil, strings.NewReader(`{"content":"pong"}`), "claude-opus-4.6", []byte(`{"stream":true}`), cliproxyexecutor.Options{
@@ -226,6 +277,47 @@ func TestStreamKiroToClaudeSSEIncludesMessageUsage(t *testing.T) {
 			}
 			if !strings.Contains(text, "event: message_stop") {
 				t.Fatalf("message_stop missing; stream=%s", text)
+			}
+			return
+		}
+	}
+}
+
+func TestStreamKiroToOpenAIResponsesSSEIncludesCompletedUsage(t *testing.T) {
+	original := []byte(`{"model":"claude-sonnet-4.5","input":"Return exactly: pong","stream":true}`)
+	requestPayload := kiroSourcePayload("claude-sonnet-4.5", original, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       true,
+	})
+	out := make(chan cliproxyexecutor.StreamChunk, 32)
+	stats := streamKiroToOpenAIResponsesSSE(context.Background(), nil, strings.NewReader(`{"content":"pong"}`), "claude-sonnet-4.5", requestPayload, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: original,
+		Stream:          true,
+	}, time.Now(), out)
+
+	if stats.ResponseLength != len("pong") {
+		t.Fatalf("response length = %d, want %d", stats.ResponseLength, len("pong"))
+	}
+
+	var combined strings.Builder
+	for {
+		select {
+		case chunk := <-out:
+			if chunk.Err != nil {
+				t.Fatalf("unexpected stream error: %v", chunk.Err)
+			}
+			combined.Write(chunk.Payload)
+		default:
+			text := combined.String()
+			if !strings.Contains(text, "event: response.completed") {
+				t.Fatalf("response.completed missing; stream=%s", text)
+			}
+			if !strings.Contains(text, `"text":"pong"`) {
+				t.Fatalf("output text missing; stream=%s", text)
+			}
+			if !strings.Contains(text, `"usage":{"input_tokens":0`) {
+				t.Fatalf("response usage missing; stream=%s", text)
 			}
 			return
 		}
