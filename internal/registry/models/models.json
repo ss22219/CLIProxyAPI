@@ -2044,34 +2044,15 @@
   ],
   "kiro": [
     {
-      "id": "claude-sonnet-4-20250514",
+      "id": "auto",
       "object": "model",
       "created": 1747267200,
       "owned_by": "amazon",
       "type": "kiro",
-      "display_name": "Claude Sonnet 4 (Kiro)",
-      "context_length": 200000,
+      "display_name": "Auto",
+      "description": "Models chosen by task for optimal usage and consistent quality",
+      "context_length": 1000000,
       "max_completion_tokens": 64000
-    },
-    {
-      "id": "claude-sonnet-4-5-20250929",
-      "object": "model",
-      "created": 1759276800,
-      "owned_by": "amazon",
-      "type": "kiro",
-      "display_name": "Claude Sonnet 4.5 (Kiro)",
-      "context_length": 200000,
-      "max_completion_tokens": 64000
-    },
-    {
-      "id": "amazon-nova-pro",
-      "object": "model",
-      "created": 1747267200,
-      "owned_by": "amazon",
-      "type": "kiro",
-      "display_name": "Amazon Nova Pro (Kiro)",
-      "context_length": 300000,
-      "max_completion_tokens": 5000
     }
   ]
 }

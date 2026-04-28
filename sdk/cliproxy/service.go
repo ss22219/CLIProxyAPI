@@ -931,7 +931,10 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
 	case "kiro":
-		models = registry.GetKiroModels()
+		models = s.fetchKiroModels(a)
+		if len(models) == 0 {
+			models = registry.GetKiroModels()
+		}
 		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
@@ -1390,6 +1393,34 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 			}
 		}
 		out = append(out, info)
+	}
+	return out
+}
+
+func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
+	if a == nil {
+		return nil
+	}
+	kiroExec := executor.NewKiroExecutor(s.cfg)
+	models, err := kiroExec.FetchModels(context.Background(), a)
+	if err != nil {
+		log.Debugf("kiro: ListAvailableModels failed for %s: %v", a.ID, err)
+		return nil
+	}
+	out := make([]*ModelInfo, 0, len(models))
+	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		out = append(out, &ModelInfo{
+			ID:          m.ID,
+			Object:      m.Object,
+			Created:     m.Created,
+			OwnedBy:     m.OwnedBy,
+			Type:        m.Type,
+			DisplayName: m.DisplayName,
+			Description: m.Description,
+		})
 	}
 	return out
 }

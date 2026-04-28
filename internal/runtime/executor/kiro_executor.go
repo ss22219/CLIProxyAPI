@@ -9,6 +9,7 @@ import (
 
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -101,6 +102,46 @@ func kiroAccessToken(auth *cliproxyauth.Auth) string {
 		return v
 	}
 	return ""
+}
+
+// FetchModels calls the Kiro ListAvailableModels API and returns registry-compatible ModelInfo entries.
+func (e *KiroExecutor) FetchModels(ctx context.Context, auth *cliproxyauth.Auth) ([]*registry.ModelInfo, error) {
+	token := kiroAccessToken(auth)
+	if token == "" {
+		return nil, fmt.Errorf("kiro: no access token for model fetch")
+	}
+	var profileArn string
+	if auth != nil && auth.Metadata != nil {
+		if v, ok := auth.Metadata["profile_arn"].(string); ok {
+			profileArn = v
+		}
+	}
+	svc := kiroauth.NewKiroAuthWithProxyURL(e.cfg, auth.ProxyURL)
+	models, err := svc.FetchModels(ctx, token, profileArn)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	out := make([]*registry.ModelInfo, 0, len(models))
+	for _, m := range models {
+		if strings.TrimSpace(m.ModelID) == "" {
+			continue
+		}
+		displayName := m.ModelName
+		if displayName == "" {
+			displayName = m.ModelID
+		}
+		out = append(out, &registry.ModelInfo{
+			ID:          m.ModelID,
+			Object:      "model",
+			Created:     now,
+			OwnedBy:     "amazon",
+			Type:        "kiro",
+			DisplayName: displayName,
+			Description: m.Description,
+		})
+	}
+	return out, nil
 }
 
 // metadataToKiroStorage converts auth metadata to a KiroTokenStorage.
