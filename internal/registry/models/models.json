@@ -2053,6 +2053,105 @@
       "description": "Models chosen by task for optimal usage and consistent quality",
       "context_length": 1000000,
       "max_completion_tokens": 64000
+    },
+    {
+      "id": "claude-opus-4.6",
+      "object": "model",
+      "created": 1747267200,
+      "owned_by": "amazon",
+      "type": "kiro",
+      "display_name": "Claude Opus 4.6",
+      "description": "The Claude Opus 4.6 model",
+      "context_length": 1000000,
+      "max_completion_tokens": 64000
+    },
+    {
+      "id": "claude-sonnet-4.6",
+      "object": "model",
+      "created": 1747267200,
+      "owned_by": "amazon",
+      "type": "kiro",
+      "display_name": "Claude Sonnet 4.6",
+      "description": "The latest Claude Sonnet model with 1M context window",
+      "context_length": 1000000,
+      "max_completion_tokens": 64000
+    },
+    {
+      "id": "claude-opus-4.5",
+      "object": "model",
+      "created": 1747267200,
+      "owned_by": "amazon",
+      "type": "kiro",
+      "display_name": "Claude Opus 4.5",
+      "description": "The Claude Opus 4.5 model",
+      "context_length": 200000,
+      "max_completion_tokens": 64000
+    },
+    {
+      "id": "claude-sonnet-4.5",
+      "object": "model",
+      "created": 1747267200,
+      "owned_by": "amazon",
+      "type": "kiro",
+      "display_name": "Claude Sonnet 4.5",
+      "description": "The Claude Sonnet 4.5 model",
+      "context_length": 200000,
+      "max_completion_tokens": 64000
+    },
+    {
+      "id": "claude-sonnet-4",
+      "object": "model",
+      "created": 1747267200,
+      "owned_by": "amazon",
+      "type": "kiro",
+      "display_name": "Claude Sonnet 4",
+      "description": "Hybrid reasoning and coding for regular use",
+      "context_length": 200000,
+      "max_completion_tokens": 64000
+    },
+    {
+      "id": "claude-haiku-4.5",
+      "object": "model",
+      "created": 1747267200,
+      "owned_by": "amazon",
+      "type": "kiro",
+      "display_name": "Claude Haiku 4.5",
+      "description": "The latest Claude Haiku model",
+      "context_length": 200000,
+      "max_completion_tokens": 64000
+    },
+    {
+      "id": "deepseek-3.2",
+      "object": "model",
+      "created": 1747267200,
+      "owned_by": "amazon",
+      "type": "kiro",
+      "display_name": "DeepSeek 3.2",
+      "description": "Experimental preview of DeepSeek V3.2",
+      "context_length": 164000,
+      "max_completion_tokens": 64000
+    },
+    {
+      "id": "minimax-m2.5",
+      "object": "model",
+      "created": 1747267200,
+      "owned_by": "amazon",
+      "type": "kiro",
+      "display_name": "MiniMax M2.5",
+      "description": "The MiniMax M2.5 model",
+      "context_length": 196000,
+      "max_completion_tokens": 64000
+    },
+    {
+      "id": "qwen3-coder-next",
+      "object": "model",
+      "created": 1747267200,
+      "owned_by": "amazon",
+      "type": "kiro",
+      "display_name": "Qwen3 Coder Next",
+      "description": "Experimental preview of Qwen3 Coder Next",
+      "context_length": 256000,
+      "max_completion_tokens": 64000
     }
   ]
 }
