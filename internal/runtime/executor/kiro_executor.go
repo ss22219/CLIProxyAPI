@@ -90,7 +90,34 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	auth.Metadata["auth_method"] = result.AuthMethod
 	auth.Metadata["type"] = "kiro"
 	auth.Metadata["last_refresh"] = time.Now().Format(time.RFC3339)
+
+	// For SSO auth, fetch profileArn if not already set
+	if result.AuthMethod == "oidc" || result.AuthMethod == "sso" {
+		if _, ok := auth.Metadata["profile_arn"].(string); !ok || auth.Metadata["profile_arn"] == "" {
+			go e.fetchAndStoreProfileArn(auth, result.AccessToken)
+		}
+	}
+
+	// Fire-and-forget login telemetry
+	go kiroauth.SendLoginTelemetry(&http.Client{Timeout: 10 * time.Second}, "")
+
 	return auth, nil
+}
+
+// fetchAndStoreProfileArn fetches profileArn in the background and stores it in auth metadata.
+func (e *KiroExecutor) fetchAndStoreProfileArn(auth *cliproxyauth.Auth, token string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	svc := kiroauth.NewKiroAuthWithProxyURL(e.cfg, auth.ProxyURL)
+	arn, err := svc.FetchProfileArn(ctx, token)
+	if err != nil {
+		log.Debugf("kiro: FetchProfileArn failed (non-fatal): %v", err)
+		return
+	}
+	if arn != "" && auth.Metadata != nil {
+		auth.Metadata["profile_arn"] = arn
+		log.Debugf("kiro: profileArn fetched: %s", arn)
+	}
 }
 
 // kiroAccessToken extracts the access token from auth metadata.
