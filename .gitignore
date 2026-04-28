@@ -50,3 +50,5 @@ _bmad-output/*
 # macOS
 .DS_Store
 ._*
+cli-proxy-api-linux
+test-tool.json

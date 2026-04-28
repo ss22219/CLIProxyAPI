@@ -1,0 +1,138 @@
+package executor
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
+)
+
+// KiroExecutor handles Kiro (AWS Q) API requests and token refresh.
+type KiroExecutor struct {
+	OpenAICompatExecutor
+	cfg *config.Config
+}
+
+// NewKiroExecutor creates a new Kiro executor.
+func NewKiroExecutor(cfg *config.Config) *KiroExecutor {
+	return &KiroExecutor{
+		OpenAICompatExecutor: *NewOpenAICompatExecutor("kiro", cfg),
+		cfg:                  cfg,
+	}
+}
+
+// Identifier returns the executor identifier.
+func (e *KiroExecutor) Identifier() string { return "kiro" }
+
+// PrepareRequest injects Kiro credentials into the outgoing HTTP request.
+func (e *KiroExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
+	if req == nil {
+		return nil
+	}
+	token := kiroAccessToken(auth)
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	// Kiro Q API requires specific content type and target header
+	if req.Header.Get("x-amz-target") != "" {
+		req.Header.Set("Content-Type", "application/x-amz-json-1.0")
+	}
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(req, attrs)
+	return nil
+}
+
+// Refresh refreshes the Kiro token using the appropriate method (OIDC or Social).
+func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	log.Debugf("kiro executor: refresh called")
+	if auth == nil {
+		return nil, fmt.Errorf("kiro executor: auth is nil")
+	}
+
+	var refreshToken string
+	if auth.Metadata != nil {
+		if v, ok := auth.Metadata["refresh_token"].(string); ok && strings.TrimSpace(v) != "" {
+			refreshToken = v
+		}
+	}
+	if strings.TrimSpace(refreshToken) == "" {
+		return auth, nil
+	}
+
+	storage := metadataToKiroStorage(auth.Metadata)
+	svc := kiroauth.NewKiroAuthWithProxyURL(e.cfg, auth.ProxyURL)
+	result, err := svc.RefreshToken(ctx, storage)
+	if err != nil {
+		return nil, err
+	}
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	auth.Metadata["access_token"] = result.AccessToken
+	if result.RefreshToken != "" {
+		auth.Metadata["refresh_token"] = result.RefreshToken
+	}
+	if result.ExpiresAt != "" {
+		auth.Metadata["expires_at"] = result.ExpiresAt
+	}
+	auth.Metadata["auth_method"] = result.AuthMethod
+	auth.Metadata["type"] = "kiro"
+	auth.Metadata["last_refresh"] = time.Now().Format(time.RFC3339)
+	return auth, nil
+}
+
+// kiroAccessToken extracts the access token from auth metadata.
+func kiroAccessToken(auth *cliproxyauth.Auth) string {
+	if auth == nil || auth.Metadata == nil {
+		return ""
+	}
+	if v, ok := auth.Metadata["access_token"].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// metadataToKiroStorage converts auth metadata to a KiroTokenStorage.
+func metadataToKiroStorage(metadata map[string]any) *kiroauth.KiroTokenStorage {
+	s := &kiroauth.KiroTokenStorage{
+		AuthMethod: "social",
+		Region:     kiroauth.DefaultRegion,
+		Type:       "kiro",
+	}
+	if metadata == nil {
+		return s
+	}
+	if v, ok := metadata["access_token"].(string); ok {
+		s.AccessToken = v
+	}
+	if v, ok := metadata["refresh_token"].(string); ok {
+		s.RefreshToken = v
+	}
+	if v, ok := metadata["auth_method"].(string); ok && v != "" {
+		s.AuthMethod = v
+	}
+	if v, ok := metadata["region"].(string); ok && v != "" {
+		s.Region = v
+	}
+	if v, ok := metadata["client_id"].(string); ok {
+		s.ClientID = v
+	}
+	if v, ok := metadata["client_secret"].(string); ok {
+		s.ClientSecret = v
+	}
+	if v, ok := metadata["expires_at"].(string); ok {
+		s.ExpiresAt = v
+	}
+	return s
+}
