@@ -340,6 +340,9 @@ nonstream-keepalive-interval: 0
 #   kimi:
 #     - name: "kimi-k2.5"
 #       alias: "k2.5"
+#   kiro:
+#     - name: "claude-sonnet-4.6"
+#       alias: "sonnet"
 
 # OAuth provider excluded models
 # oauth-excluded-models:
