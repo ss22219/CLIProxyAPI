@@ -64,30 +64,51 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		AuthID: authID, AuthLabel: authLabel, AuthType: authType, AuthValue: authValue,
 	})
 
-	t0 := time.Now()
+	const maxRetries = 3
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
+	var body []byte
+	var content string
+	var toolCalls []kiroToolCall
+	var respHeaders http.Header
+	var ttfc float64
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			httpReq, err = newKiroHTTPRequest(ctx, token, kiroBody)
+			if err != nil {
+				return resp, err
+			}
+		}
+		t0 := time.Now()
+		httpResp, doErr := httpClient.Do(httpReq)
+		if doErr != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, doErr)
+			err = doErr
+			return resp, err
+		}
+		ttfc = float64(time.Since(t0).Milliseconds())
+		helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		body, _ = io.ReadAll(httpResp.Body)
+		_ = httpResp.Body.Close()
+		helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+		respHeaders = httpResp.Header.Clone()
+
+		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+			err = statusErr{code: httpResp.StatusCode, msg: string(body)}
+			return resp, err
+		}
+
+		content, toolCalls = parseKiroEventStream(body)
+		if content != "" || len(toolCalls) > 0 {
+			break
+		}
+		log.Debugf("kiro: empty response on attempt %d, retrying", attempt+1)
 	}
-	defer func() { _ = httpResp.Body.Close() }()
-	ttfc := float64(time.Since(t0).Milliseconds())
 
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	body, _ := io.ReadAll(httpResp.Body)
-	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
-
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		err = statusErr{code: httpResp.StatusCode, msg: string(body)}
-		return resp, err
-	}
-
-	content, toolCalls := parseKiroEventStream(body)
 	openAIResp := buildOpenAINonStreamResponse(req.Model, content, toolCalls)
 	outResp := translateKiroNonStreamResponse(ctx, req.Model, openAIResp, requestPayload, opts)
 	reporter.EnsurePublished(ctx)
-	resp = cliproxyexecutor.Response{Payload: outResp, Headers: httpResp.Header.Clone()}
+	resp = cliproxyexecutor.Response{Payload: outResp, Headers: respHeaders}
 
 	// Fire-and-forget Q API telemetry (non-streaming: all events parsed at once, timeBetweenChunks is empty)
 	go fireQTelemetry(token, conversationID, baseModel, profileArn, telemetryStats{
@@ -152,15 +173,48 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, err
 	}
 
+	const maxStreamRetries = 3
+	var streamBody []byte
+	respHeaders := httpResp.Header.Clone()
+	streamBody, _ = io.ReadAll(httpResp.Body)
+	_ = httpResp.Body.Close()
+	helps.AppendAPIResponseChunk(ctx, e.cfg, streamBody)
+
+	for attempt := 1; attempt < maxStreamRetries; attempt++ {
+		streamContent, streamToolCalls := parseKiroEventStream(streamBody)
+		if streamContent != "" || len(streamToolCalls) > 0 {
+			break
+		}
+		log.Debugf("kiro: empty stream response on attempt %d, retrying", attempt)
+		retryReq, retryErr := newKiroHTTPRequest(ctx, token, kiroBody)
+		if retryErr != nil {
+			break
+		}
+		retryResp, retryErr := httpClient.Do(retryReq)
+		if retryErr != nil {
+			break
+		}
+		helps.RecordAPIResponseMetadata(ctx, e.cfg, retryResp.StatusCode, retryResp.Header.Clone())
+		if retryResp.StatusCode < 200 || retryResp.StatusCode >= 300 {
+			b, _ := io.ReadAll(retryResp.Body)
+			_ = retryResp.Body.Close()
+			helps.AppendAPIResponseChunk(ctx, e.cfg, b)
+			break
+		}
+		streamBody, _ = io.ReadAll(retryResp.Body)
+		_ = retryResp.Body.Close()
+		helps.AppendAPIResponseChunk(ctx, e.cfg, streamBody)
+		respHeaders = retryResp.Header.Clone()
+	}
+
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
-		defer func() { _ = httpResp.Body.Close() }()
-		stats := streamKiroToSourceSSE(ctx, e.cfg, httpResp.Body, req.Model, requestPayload, opts, t0, out)
+		stats := streamKiroToSourceSSE(ctx, e.cfg, bytes.NewReader(streamBody), req.Model, requestPayload, opts, t0, out)
 		reporter.EnsurePublished(ctx)
 		go fireQTelemetry(token, conversationID, baseModel, profileArn, stats)
 	}()
-	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+	return &cliproxyexecutor.StreamResult{Headers: respHeaders, Chunks: out}, nil
 }
 
 // newKiroHTTPRequest builds an HTTP request for the Kiro GenerateAssistantResponse API.
