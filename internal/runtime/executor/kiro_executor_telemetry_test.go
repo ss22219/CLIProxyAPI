@@ -152,6 +152,32 @@ func TestBuildKiroRequestBody_AnthropicToolUseAndResult(t *testing.T) {
 	}
 }
 
+func TestBuildKiroRequestBody_AnthropicToolResultImage(t *testing.T) {
+	payload := []byte(`{
+		"messages":[
+			{"role":"user","content":"read it"},
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"path":"screenshot.png"}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[
+				{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}
+			]}]}
+		]
+	}`)
+	body, _ := buildKiroRequestBody(payload, "auto", "arn:test")
+
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.images.0.format").String(); got != "png" {
+		t.Fatalf("tool result image format = %q, want png; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.images.0.source.bytes").String(); got != "aGVsbG8=" {
+		t.Fatalf("tool result image bytes = %q, want aGVsbG8=; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.userInputMessageContext.toolResults.0.toolUseId").String(); got != "toolu_1" {
+		t.Fatalf("tool result id = %q, want toolu_1; body=%s", got, string(body))
+	}
+	if gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.userInputMessageContext.images").Exists() {
+		t.Fatalf("tool result images must be userInputMessage.images, not nested under context; body=%s", string(body))
+	}
+}
+
 func TestBuildKiroRequestBody_AnthropicSystemArrayAndImage(t *testing.T) {
 	payload := []byte(`{
 		"system":[{"type":"text","text":"alpha"},{"type":"text","text":" beta","cache_control":{"type":"ephemeral"}}],

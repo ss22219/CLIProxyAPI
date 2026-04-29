@@ -312,11 +312,12 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 		switch role {
 		case "user":
 			currentContent = extractTextContent(msg)
-			currentImages = extractImages(msg)
+			currentImages = append(currentImages, extractImages(msg)...)
 			currentToolResults = append(currentToolResults, extractToolResults(msg)...)
 		case "assistant":
 			history = append(history, buildKiroAssistantHistoryEntry(msg, convID))
 		case "tool":
+			currentImages = append(currentImages, extractImages(msg)...)
 			currentToolResults = append(currentToolResults, extractToolResults(msg)...)
 		}
 	}
@@ -420,11 +421,15 @@ func buildKiroUserHistoryEntry(msg gjson.Result, envState map[string]string) map
 	if toolResults := extractToolResults(msg); len(toolResults) > 0 {
 		ctx["toolResults"] = toolResults
 	}
+	userInputMessage := map[string]any{
+		"content":                 extractTextContent(msg),
+		"userInputMessageContext": ctx,
+	}
+	if images := extractImages(msg); len(images) > 0 {
+		userInputMessage["images"] = images
+	}
 	return map[string]any{
-		"userInputMessage": map[string]any{
-			"content":                 extractTextContent(msg),
-			"userInputMessageContext": ctx,
-		},
+		"userInputMessage": userInputMessage,
 	}
 }
 
@@ -655,43 +660,69 @@ func appendKiroHistoryToolResults(history []map[string]any, envState map[string]
 // extractImages extracts base64 images from OpenAI multimodal content parts
 // and converts them to Kiro format: [{format: "png", source: {bytes: "<base64>"}]
 func extractImages(msg gjson.Result) []map[string]any {
-	content := msg.Get("content")
+	return extractImagesFromContent(msg.Get("content"))
+}
+
+func extractImagesFromContent(content gjson.Result) []map[string]any {
 	if !content.IsArray() {
+		if content.IsObject() {
+			return appendKiroImageFromPart(nil, content)
+		}
 		return nil
 	}
 	var images []map[string]any
 	for _, p := range content.Array() {
-		switch p.Get("type").String() {
-		case "image_url":
-			url := p.Get("image_url.url").String()
-			if url == "" {
-				continue
-			}
-			const prefix = ";base64,"
-			idx := strings.Index(url, prefix)
-			if idx < 0 {
-				continue
-			}
-			images = append(images, map[string]any{
-				"format": kiroImageFormatFromMediaType(url[5:idx]),
-				"source": map[string]any{"bytes": url[idx+len(prefix):]},
-			})
-		case "image":
-			source := p.Get("source")
-			if source.Get("type").String() != "base64" {
-				continue
-			}
-			b64 := source.Get("data").String()
-			if b64 == "" {
-				continue
-			}
-			images = append(images, map[string]any{
-				"format": kiroImageFormatFromMediaType(source.Get("media_type").String()),
-				"source": map[string]any{"bytes": b64},
-			})
+		if p.Get("type").String() == "tool_result" {
+			images = append(images, extractImagesFromContent(p.Get("content"))...)
+			continue
 		}
+		images = appendKiroImageFromPart(images, p)
 	}
 	return images
+}
+
+func appendKiroImageFromPart(images []map[string]any, p gjson.Result) []map[string]any {
+	switch p.Get("type").String() {
+	case "image_url", "input_image":
+		url := p.Get("image_url.url").String()
+		if url == "" {
+			url = p.Get("image_url").String()
+		}
+		if url == "" {
+			url = p.Get("url").String()
+		}
+		const prefix = ";base64,"
+		idx := strings.Index(url, prefix)
+		if idx < 0 || !strings.HasPrefix(url, "data:") {
+			return images
+		}
+		return append(images, map[string]any{
+			"format": kiroImageFormatFromMediaType(url[len("data:"):idx]),
+			"source": map[string]any{"bytes": url[idx+len(prefix):]},
+		})
+	case "image":
+		source := p.Get("source")
+		if source.Get("type").String() != "base64" {
+			return images
+		}
+		b64 := source.Get("data").String()
+		if b64 == "" {
+			b64 = source.Get("base64").String()
+		}
+		if b64 == "" {
+			return images
+		}
+		mediaType := source.Get("media_type").String()
+		if mediaType == "" {
+			mediaType = source.Get("mime_type").String()
+		}
+		return append(images, map[string]any{
+			"format": kiroImageFormatFromMediaType(mediaType),
+			"source": map[string]any{"bytes": b64},
+		})
+	default:
+		return images
+	}
 }
 
 func kiroImageFormatFromMediaType(mediaType string) string {
