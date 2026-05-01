@@ -100,6 +100,15 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 
 		content, toolCalls = parseKiroEventStream(body)
 		if content != "" || len(toolCalls) > 0 {
+			for i, tc := range toolCalls {
+				if tc.Args == "" || tc.Args == "{}" {
+					preview := string(body)
+					if len(preview) > 2000 {
+						preview = preview[:2000] + "...(truncated)"
+					}
+					log.Warnf("kiro: tool call [%d] %q (%s) has empty args; raw body preview:\n%s", i, tc.Name, tc.ID, preview)
+				}
+			}
 			break
 		}
 		log.Debugf("kiro: empty response on attempt %d, retrying", attempt+1)
@@ -888,7 +897,6 @@ func parseKiroEventStream(data []byte) (string, []kiroToolCall) {
 		case "content":
 			content.WriteString(evt.data)
 		case "toolUse":
-			// Initial tool use event — start a new tool call
 			cur = &kiroToolCall{ID: evt.toolUseID, Name: evt.name}
 		case "toolUseInput":
 			if cur != nil {
@@ -896,6 +904,9 @@ func parseKiroEventStream(data []byte) (string, []kiroToolCall) {
 			}
 		case "toolUseStop":
 			if cur != nil {
+				if cur.Args == "" {
+					log.Warnf("kiro: tool call %q (%s) has empty arguments — upstream may have truncated output", cur.Name, cur.ID)
+				}
 				toolCalls = append(toolCalls, *cur)
 				cur = nil
 			}
@@ -1194,6 +1205,9 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 				}
 			case "toolUseStop":
 				if cur != nil {
+					if cur.Args == "" {
+						log.Warnf("kiro stream: tool call %q (%s) has empty arguments — upstream may have truncated output", cur.Name, cur.ID)
+					}
 					chunk := buildOpenAISSEToolCallChunk(chatID, model, tcIndex, cur)
 					helps.AppendAPIResponseChunk(ctx, cfg, chunk)
 					out <- cliproxyexecutor.StreamChunk{Payload: chunk}
