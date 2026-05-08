@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -102,11 +104,12 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		if content != "" || len(toolCalls) > 0 {
 			for i, tc := range toolCalls {
 				if tc.Args == "" || tc.Args == "{}" {
-					preview := string(body)
-					if len(preview) > 2000 {
-						preview = preview[:2000] + "...(truncated)"
-					}
-					log.Warnf("kiro: tool call [%d] %q (%s) has empty args; raw body preview:\n%s", i, tc.Name, tc.ID, preview)
+					ts := time.Now().Unix()
+					respFile := fmt.Sprintf("/tmp/kiro-empty-args-%s-%d.bin", tc.ID, ts)
+					reqFile := fmt.Sprintf("/tmp/kiro-empty-args-%s-%d.req.json", tc.ID, ts)
+					_ = os.WriteFile(respFile, body, 0644)
+					_ = os.WriteFile(reqFile, kiroBody, 0644)
+					log.Warnf("kiro: tool call [%d] %q (%s) has empty args; resp=%s (%d bytes) req=%s (%d bytes)", i, tc.Name, tc.ID, respFile, len(body), reqFile, len(kiroBody))
 				}
 			}
 			break
