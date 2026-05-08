@@ -20,10 +20,21 @@ type KiroCliCredentials struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresAt    string
+	ProfileArn   string // populated from social:token or state.api.codewhisperer.profile
+	Provider     string // populated from social:token (e.g., "google")
+	AuthMethod   string // "oidc" or "social", inferred from which key contains the token
 }
 
 // ReadKiroCliCredentials reads credentials from the kiro-cli SQLite database.
 // The database is at %LOCALAPPDATA%\Kiro-Cli\data.sqlite3 on Windows.
+//
+// The actual auth_kv keys in the sqlite file are:
+//   - kirocli:odic:device-registration  (SSO: client_id, client_secret, region)
+//   - kirocli:odic:token                (SSO token rows; accessToken starts with "aoa")
+//   - kirocli:social:token              (Social/Google/GitHub: token + provider + profile_arn)
+//
+// Precedence: if kirocli:social:token is present, treat as social login. Otherwise
+// fall back to the kirocli:odic:token + kirocli:odic:device-registration pair.
 func ReadKiroCliCredentials() (*KiroCliCredentials, error) {
 	dbPath := kiroCliDBPath()
 	if dbPath == "" {
@@ -35,10 +46,49 @@ func ReadKiroCliCredentials() (*KiroCliCredentials, error) {
 
 	creds := &KiroCliCredentials{Region: DefaultRegion}
 
-	// Read device-registration (client_id, client_secret, region)
-	devReg, err := queryKV(dbPath, "device-registration")
+	// Prefer social:token if present.
+	socialRaw, err := queryKVExact(dbPath, "kirocli:social:token")
 	if err != nil {
-		log.Debugf("kiro: failed to read device-registration: %v", err)
+		log.Debugf("kiro: read social:token failed: %v", err)
+	}
+	if socialRaw != "" {
+		var tok map[string]any
+		if errParse := json.Unmarshal([]byte(socialRaw), &tok); errParse == nil {
+			creds.AuthMethod = "social"
+			if v, ok := tok["access_token"].(string); ok {
+				creds.AccessToken = v
+			}
+			if v, ok := tok["refresh_token"].(string); ok {
+				creds.RefreshToken = v
+			}
+			if v, ok := tok["expires_at"].(string); ok {
+				creds.ExpiresAt = v
+			}
+			if v, ok := tok["profile_arn"].(string); ok {
+				creds.ProfileArn = v
+			}
+			if v, ok := tok["provider"].(string); ok {
+				creds.Provider = v
+			}
+			// Best-effort: also populate ProfileArn from the state table if missing.
+			if creds.ProfileArn == "" {
+				if arn := readProfileArnFromState(dbPath); arn != "" {
+					creds.ProfileArn = arn
+				}
+			}
+			if creds.AccessToken == "" && creds.RefreshToken == "" {
+				return nil, fmt.Errorf("kiro: social:token present but missing tokens")
+			}
+			return creds, nil
+		}
+	}
+
+	// Fallback to SSO (OIDC) key pair.
+	creds.AuthMethod = "oidc"
+
+	devReg, err := queryKVExact(dbPath, "kirocli:odic:device-registration")
+	if err != nil {
+		log.Debugf("kiro: read device-registration failed: %v", err)
 	} else if devReg != "" {
 		var reg map[string]any
 		if errParse := json.Unmarshal([]byte(devReg), &reg); errParse == nil {
@@ -54,13 +104,12 @@ func ReadKiroCliCredentials() (*KiroCliCredentials, error) {
 		}
 	}
 
-	// Read token (access_token, refresh_token, expires_at)
-	tokenData, err := queryKV(dbPath, "token")
+	tokenData, err := queryKVExact(dbPath, "kirocli:odic:token")
 	if err != nil {
-		return nil, fmt.Errorf("kiro: failed to read token from kiro-cli: %w", err)
+		return nil, fmt.Errorf("kiro: failed to read odic:token from kiro-cli: %w", err)
 	}
 	if tokenData == "" {
-		return nil, fmt.Errorf("kiro: no token found in kiro-cli database")
+		return nil, fmt.Errorf("kiro: no social or odic token found in kiro-cli database")
 	}
 
 	var tok map[string]any
@@ -76,9 +125,15 @@ func ReadKiroCliCredentials() (*KiroCliCredentials, error) {
 	if v, ok := tok["expires_at"].(string); ok {
 		creds.ExpiresAt = v
 	}
-	// expires_at may also be a number
 	if v, ok := tok["expires_at"].(float64); ok && v > 0 {
 		creds.ExpiresAt = fmt.Sprintf("%.0f", v)
+	}
+	if v, ok := tok["region"].(string); ok && v != "" {
+		creds.Region = v
+	}
+
+	if arn := readProfileArnFromState(dbPath); arn != "" {
+		creds.ProfileArn = arn
 	}
 
 	if creds.AccessToken == "" && creds.RefreshToken == "" {
@@ -105,20 +160,49 @@ func kiroCliDBPath() string {
 	return filepath.Join(home, ".local", "share", "Kiro-Cli", "data.sqlite3")
 }
 
-// queryKV queries the auth_kv table for a given key using the sqlite3 CLI.
-func queryKV(dbPath, key string) (string, error) {
+// queryKVExact queries the auth_kv table for an exact key using the sqlite3 CLI.
+// The key is passed via the command line; sqlite3 treats it as a literal value.
+func queryKVExact(dbPath, key string) (string, error) {
 	sqlite3Path, err := findSqlite3()
 	if err != nil {
 		return "", err
 	}
-
-	query := fmt.Sprintf("SELECT value FROM auth_kv WHERE key='%s';", key)
+	// Escape single quotes in the key for SQL safety. Keys in kiro-cli are
+	// internal constants so this is belt-and-suspenders.
+	safeKey := strings.ReplaceAll(key, "'", "''")
+	query := fmt.Sprintf("SELECT value FROM auth_kv WHERE key='%s';", safeKey)
 	cmd := exec.Command(sqlite3Path, dbPath, query)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("sqlite3 query failed: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// readProfileArnFromState reads api.codewhisperer.profile from the state table
+// and extracts the arn field.
+func readProfileArnFromState(dbPath string) string {
+	sqlite3Path, err := findSqlite3()
+	if err != nil {
+		return ""
+	}
+	cmd := exec.Command(sqlite3Path, dbPath, "SELECT value FROM state WHERE key='api.codewhisperer.profile';")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	raw := strings.TrimSpace(string(out))
+	if raw == "" {
+		return ""
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return ""
+	}
+	if v, ok := obj["arn"].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // findSqlite3 locates the sqlite3 CLI binary.

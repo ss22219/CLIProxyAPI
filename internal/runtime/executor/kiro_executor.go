@@ -84,9 +84,13 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	auth.Metadata["auth_method"] = result.AuthMethod
 	auth.Metadata["type"] = "kiro"
 	auth.Metadata["last_refresh"] = time.Now().Format(time.RFC3339)
+	if result.ProfileArn != "" {
+		auth.Metadata["profile_arn"] = result.ProfileArn
+	}
 	updateNestedKiroToken(auth.Metadata, result)
 
-	// For SSO auth, fetch profileArn if not already set
+	// For SSO auth, fetch profileArn if not already set (social refresh already
+	// returns profileArn inline, so only OIDC needs this extra hop).
 	if result.AuthMethod == "oidc" || result.AuthMethod == "sso" {
 		if _, ok := auth.Metadata["profile_arn"].(string); !ok || auth.Metadata["profile_arn"] == "" {
 			go e.fetchAndStoreProfileArn(auth, result.AccessToken)
@@ -230,6 +234,7 @@ func metadataToKiroStorage(metadata map[string]any) *kiroauth.KiroTokenStorage {
 	s.AccessToken = getString("access_token")
 	s.RefreshToken = getString("refresh_token")
 	s.ExpiresAt = getString("expires_at")
+	s.ProfileArn = getString("profile_arn")
 	if v := getString("auth_method"); v != "" {
 		s.AuthMethod = v
 	}

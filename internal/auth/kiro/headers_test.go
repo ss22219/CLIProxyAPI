@@ -96,7 +96,7 @@ func TestUserAgentVersionStrings(t *testing.T) {
 	SetStreamingHeaders(req, "t")
 
 	ua := req.Header.Get("User-Agent")
-	for _, want := range []string{"1.3.14", "2.0.1", "0.1.14474"} {
+	for _, want := range []string{"1.3.14", "2.2.2", "0.1.14474"} {
 		if !strings.Contains(ua, want) {
 			t.Errorf("User-Agent missing version %s, got: %s", want, ua)
 		}

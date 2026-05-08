@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +24,7 @@ const (
 	cognitoPoolID     = "us-east-1:820fd6d1-95c0-4ca4-bffb-3f01d32da842"
 	cognitoRegion     = "us-east-1"
 	telemetryProduct  = "CodeWhisperer for Terminal"
-	telemetryVersion  = "2.0.1"
+	telemetryVersion  = "2.2.2"
 )
 
 // --- Cognito credential cache (process-wide) ---
@@ -110,6 +111,116 @@ func AgentConfigInitMetric(startURL string) MetricDatum {
 	}
 }
 
+// ChatMessageMetricParams carries fields for addChatMessage / recordUserTurnCompletion.
+// Zero/empty fields are serialized as empty string to match real kiro-cli payloads.
+type ChatMessageMetricParams struct {
+	ConversationID     string
+	UtteranceID        string
+	RequestID          string
+	Model              string
+	StartURL           string
+	SSORegion          string
+	ResponseLength     int
+	UserPromptLength   int
+	TimeToFirstChunkMs float64
+	TimeBetweenChunks  []float64 // seconds
+	ToolName           string    // empty for NotToolUse
+	ToolUseID          string    // empty for NotToolUse
+	ContextFileLength  int
+	TurnDurationSec    int
+	FollowUpCount      int
+	IsSubagent         bool
+	ParentToolUseID    string
+}
+
+func (p ChatMessageMetricParams) conversationType() string {
+	if strings.TrimSpace(p.ToolName) != "" || strings.TrimSpace(p.ToolUseID) != "" {
+		return "ToolUse"
+	}
+	return "NotToolUse"
+}
+
+func formatChunks(chunks []float64) string {
+	if len(chunks) == 0 {
+		return ""
+	}
+	parts := make([]string, len(chunks))
+	for i, v := range chunks {
+		parts[i] = fmt.Sprintf("%.3f", v)
+	}
+	return strings.Join(parts, ",")
+}
+
+// AddChatMessageMetric creates a codewhispererterminal_addChatMessage metric
+// matching the toolkit telemetry channel payload produced by kiro-cli 2.2.2.
+func AddChatMessageMetric(p ChatMessageMetricParams) MetricDatum {
+	return MetricDatum{
+		MetricName: "codewhispererterminal_addChatMessage", EpochTimestamp: nowMs(), Unit: "None", Value: 1,
+		Metadata: []MetadataEntry{
+			{Key: "amazonqConversationId", Value: p.ConversationID},
+			{Key: "codewhispererterminal_utteranceId", Value: p.UtteranceID},
+			{Key: "credentialStartUrl", Value: p.StartURL},
+			{Key: "ssoRegion", Value: p.SSORegion},
+			{Key: "codewhispererterminal_inCloudshell", Value: ""},
+			{Key: "codewhispererterminal_contextFileLength", Value: fmt.Sprintf("%d", p.ContextFileLength)},
+			{Key: "requestId", Value: p.RequestID},
+			{Key: "result", Value: "Succeeded"},
+			{Key: "reason", Value: ""},
+			{Key: "reasonDesc", Value: ""},
+			{Key: "statusCode", Value: ""},
+			{Key: "codewhispererterminal_model", Value: p.Model},
+			{Key: "codewhispererterminal_timeToFirstChunksMs", Value: fmt.Sprintf("%.3f", p.TimeToFirstChunkMs)},
+			{Key: "codewhispererterminal_timeBetweenChunksMs", Value: formatChunks(p.TimeBetweenChunks)},
+			{Key: "codewhispererterminal_chatConversationType", Value: p.conversationType()},
+			{Key: "codewhispererterminal_toolUseId", Value: p.ToolUseID},
+			{Key: "codewhispererterminal_toolName", Value: p.ToolName},
+			{Key: "codewhispererterminal_assistantResponseLength", Value: fmt.Sprintf("%d", p.ResponseLength)},
+			{Key: "codewhispererterminal_chatMessageMetaTags", Value: ""},
+			{Key: "codewhispererterminal_clientApplication", Value: ""},
+		},
+	}
+}
+
+// RecordUserTurnCompletionMetric creates a codewhispererterminal_recordUserTurnCompletion metric
+// matching the toolkit telemetry channel payload produced by kiro-cli 2.2.2.
+func RecordUserTurnCompletionMetric(p ChatMessageMetricParams) MetricDatum {
+	return MetricDatum{
+		MetricName: "codewhispererterminal_recordUserTurnCompletion", EpochTimestamp: nowMs(), Unit: "None", Value: 1,
+		Metadata: []MetadataEntry{
+			{Key: "amazonqConversationId", Value: p.ConversationID},
+			{Key: "credentialStartUrl", Value: p.StartURL},
+			{Key: "ssoRegion", Value: p.SSORegion},
+			{Key: "codewhispererterminal_inCloudshell", Value: ""},
+			{Key: "requestId", Value: p.RequestID},
+			{Key: "codewhispererterminal_utteranceId", Value: p.UtteranceID},
+			{Key: "result", Value: "Succeeded"},
+			{Key: "reason", Value: ""},
+			{Key: "reasonDesc", Value: ""},
+			{Key: "statusCode", Value: ""},
+			{Key: "codewhispererterminal_chatConversationType", Value: p.conversationType()},
+			{Key: "codewhispererterminal_timeToFirstChunksMs", Value: fmt.Sprintf("%.3f", p.TimeToFirstChunkMs)},
+			{Key: "codewhispererterminal_userPromptLength", Value: fmt.Sprintf("%d", p.UserPromptLength)},
+			{Key: "codewhispererterminal_assistantResponseLength", Value: fmt.Sprintf("%d", p.ResponseLength)},
+			{Key: "codewhispererterminal_userTurnDurationSeconds", Value: fmt.Sprintf("%d", p.TurnDurationSec)},
+			{Key: "codewhispererterminal_followUpCount", Value: fmt.Sprintf("%d", p.FollowUpCount)},
+			{Key: "codewhispererterminal_chatMessageMetaTags", Value: ""},
+			{Key: "codewhispererterminal_isSubagent", Value: fmt.Sprintf("%t", p.IsSubagent)},
+			{Key: "codewhispererterminal_parentToolUseId", Value: p.ParentToolUseID},
+		},
+	}
+}
+
+// SendChatTelemetry fires addChatMessage + recordUserTurnCompletion on the toolkit
+// SigV4 channel (fire-and-forget; errors are logged at debug level).
+func SendChatTelemetry(httpClient *http.Client, p ChatMessageMetricParams) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	metrics := []MetricDatum{AddChatMessageMetric(p), RecordUserTurnCompletionMetric(p)}
+	if err := SendTelemetry(ctx, httpClient, metrics); err != nil {
+		log.Debugf("kiro: chat telemetry send failed (non-fatal): %v", err)
+	}
+}
+
 func nowMs() int64 { return time.Now().UnixMilli() }
 
 // --- Send ---
@@ -123,9 +234,9 @@ func SendTelemetry(ctx context.Context, httpClient *http.Client, metrics []Metri
 
 	payload := telemetryPayload{
 		AWSProduct: telemetryProduct, AWSProductVersion: telemetryVersion,
-		ClientID: uuid.New().String(), MetricData: metrics,
-		OS: "linux", OSArchitecture: "x86_64",
-		OSVersion: "Linux 6.6.87.2-microsoft-standard-WSL2 - Ubuntu 24.04.3 LTS",
+		ClientID: GetTelemetryClientID(), MetricData: metrics,
+		OS: KiroOSTag(), OSArchitecture: runtime.GOARCH,
+		OSVersion: kiroOSVersion(),
 	}
 	body, _ := json.Marshal(payload)
 
@@ -146,6 +257,21 @@ func SendTelemetry(ctx context.Context, httpClient *http.Client, metrics []Metri
 		return fmt.Errorf("kiro telemetry: HTTP %d: %s", resp.StatusCode, string(b))
 	}
 	return nil
+}
+
+// kiroOSVersion returns a coarse-grained OS version string matching the kiro-cli
+// telemetry payload shape: Windows reports "Windows 10 Pro (or newer) - build <n>",
+// macOS reports "macOS <version>", Linux reports a kernel+distro string when
+// available, or a fallback "<os> <arch>" otherwise.
+func kiroOSVersion() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "Windows 10 Pro (or newer) - build 19045"
+	case "darwin":
+		return "macOS 14.0"
+	default:
+		return fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH)
+	}
 }
 
 // SendLoginTelemetry sends the standard login + startup telemetry batch.
@@ -270,9 +396,13 @@ func signV4(req *http.Request, payload []byte, creds *awsCreds) {
 	amzDate := now.Format("20060102T150405Z")
 	payloadHash := sha256Hex(payload)
 
+	osTag := KiroOSTag()
+	toolkitUA := fmt.Sprintf("aws-sdk-rust/1.3.14 ua/2.1 api/toolkittelemetry/1.0.0 os/%s lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/%s app/AmazonQ-For-CLI", osTag, telemetryVersion)
+	userAgent := fmt.Sprintf("aws-sdk-rust/1.3.14 os/%s lang/rust/1.92.0", osTag)
+
 	req.Header.Set("x-amz-date", amzDate)
-	req.Header.Set("x-amz-user-agent", "aws-sdk-rust/1.3.14 ua/2.1 api/toolkittelemetry/1.0.0 os/linux lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 app/AmazonQ-For-CLI")
-	req.Header.Set("user-agent", "aws-sdk-rust/1.3.14 os/linux lang/rust/1.92.0")
+	req.Header.Set("x-amz-user-agent", toolkitUA)
+	req.Header.Set("user-agent", userAgent)
 	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	if creds.SessionToken != "" {
@@ -295,7 +425,7 @@ func signV4(req *http.Request, payload []byte, creds *awsCreds) {
 	if creds.SessionToken != "" {
 		canonicalHeaders += "x-amz-security-token:" + creds.SessionToken + "\n"
 	}
-	canonicalHeaders += "x-amz-user-agent:aws-sdk-rust/1.3.14 ua/2.1 api/toolkittelemetry/1.0.0 os/linux lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 app/AmazonQ-For-CLI\n"
+	canonicalHeaders += "x-amz-user-agent:" + toolkitUA + "\n"
 
 	canonicalRequest := strings.Join([]string{
 		"POST", "/metrics", "", canonicalHeaders, signedHeaders, payloadHash,

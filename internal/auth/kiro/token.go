@@ -21,6 +21,7 @@ type KiroTokenStorage struct {
 	ClientID     string `json:"client_id,omitempty"`
 	ClientSecret string `json:"client_secret,omitempty"`
 	ExpiresAt    string `json:"expires_at,omitempty"`
+	ProfileArn   string `json:"profile_arn,omitempty"`
 	Type         string `json:"type"`
 
 	Metadata map[string]any `json:"-"`

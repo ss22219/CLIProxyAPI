@@ -34,9 +34,9 @@ func SetCommonQHeaders(req *http.Request, token, target, apiTag, uaSuffix string
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("User-Agent",
-		fmt.Sprintf("aws-sdk-rust/1.3.14 ua/2.1 api/%s/0.1.14474 os/%s lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 md/appVersion-2.0.1 app/AmazonQ-For-CLI", apiTag, os))
+		fmt.Sprintf("aws-sdk-rust/1.3.14 ua/2.1 api/%s/0.1.14474 os/%s lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.2.2 md/appVersion-2.2.2 app/AmazonQ-For-CLI", apiTag, os))
 	req.Header.Set("x-amz-user-agent",
-		fmt.Sprintf("aws-sdk-rust/1.3.14 ua/2.1 api/%s/0.1.14474 os/%s lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 %s app/AmazonQ-For-CLI", apiTag, os, uaSuffix))
+		fmt.Sprintf("aws-sdk-rust/1.3.14 ua/2.1 api/%s/0.1.14474 os/%s lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.2.2 %s app/AmazonQ-For-CLI", apiTag, os, uaSuffix))
 }
 
 // SetStreamingHeaders sets headers for GenerateAssistantResponse.
