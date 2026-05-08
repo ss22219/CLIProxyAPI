@@ -92,7 +92,8 @@
           "high",
           "xhigh",
           "max"
-        ]
+        ],
+        "default": "xhigh"
       }
     },
     {
