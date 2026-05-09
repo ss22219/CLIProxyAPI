@@ -3,7 +3,6 @@ package kiro
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -58,17 +57,12 @@ func readTelemetryClientIDFromSqlite() string {
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return ""
 	}
-	sqlite3Path, err := findSqlite3()
-	if err != nil {
-		return ""
-	}
-	cmd := exec.Command(sqlite3Path, dbPath, "SELECT value FROM state WHERE key='telemetryClientId';")
-	out, err := cmd.Output()
+	val, err := queryStateExact(dbPath, "telemetryClientId")
 	if err != nil {
 		log.Debugf("kiro: failed to read telemetryClientId from sqlite: %v", err)
 		return ""
 	}
-	val := strings.TrimSpace(string(out))
+	val = strings.TrimSpace(val)
 	if val == "" {
 		return ""
 	}

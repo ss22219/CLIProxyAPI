@@ -1,6 +1,7 @@
 package management
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -120,54 +122,44 @@ func (h *Handler) APICall(c *gin.Context) {
 		return
 	}
 
-	urlStr := strings.TrimSpace(body.URL)
-	if urlStr == "" {
+	rawURLStr := strings.TrimSpace(body.URL)
+	if rawURLStr == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing url"})
-		return
-	}
-	parsedURL, errParseURL := url.Parse(urlStr)
-	if errParseURL != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid url"})
 		return
 	}
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
+	urlStr := rawURLStr
+	dataStr := body.Data
 
 	reqHeaders := body.Header
 	if reqHeaders == nil {
 		reqHeaders = map[string]string{}
 	}
 
-	var hostOverride string
-	var token string
-	var tokenResolved bool
-	var tokenErr error
-	for key, value := range reqHeaders {
-		if !strings.Contains(value, "$TOKEN$") {
-			continue
+	replacements, errReplacements := h.resolveAPICallReplacements(c.Request.Context(), auth, urlStr, dataStr, reqHeaders)
+	if errReplacements != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errReplacements.Error()})
+		return
+	}
+	if len(replacements) > 0 {
+		urlStr = applyAPICallReplacements(urlStr, replacements)
+		dataStr = applyAPICallReplacements(dataStr, replacements)
+		for key, value := range reqHeaders {
+			reqHeaders[key] = applyAPICallReplacements(value, replacements)
 		}
-		if !tokenResolved {
-			token, tokenErr = h.resolveTokenForAuth(c.Request.Context(), auth)
-			tokenResolved = true
-		}
-		if auth != nil && token == "" {
-			if tokenErr != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "auth token refresh failed"})
-				return
-			}
-			c.JSON(http.StatusBadRequest, gin.H{"error": "auth token not found"})
-			return
-		}
-		if token == "" {
-			continue
-		}
-		reqHeaders[key] = strings.ReplaceAll(value, "$TOKEN$", token)
+	}
+
+	parsedURL, errParseURL := url.Parse(urlStr)
+	if errParseURL != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid url"})
+		return
 	}
 
 	var requestBody io.Reader
-	if body.Data != "" {
-		requestBody = strings.NewReader(body.Data)
+	if dataStr != "" {
+		requestBody = strings.NewReader(dataStr)
 	}
 
 	req, errNewRequest := http.NewRequestWithContext(c.Request.Context(), method, urlStr, requestBody)
@@ -176,6 +168,7 @@ func (h *Handler) APICall(c *gin.Context) {
 		return
 	}
 
+	var hostOverride string
 	for key, value := range reqHeaders {
 		if strings.EqualFold(key, "host") {
 			hostOverride = strings.TrimSpace(value)
@@ -204,7 +197,21 @@ func (h *Handler) APICall(c *gin.Context) {
 		}
 	}()
 
-	respBody, errReadAll := io.ReadAll(resp.Body)
+	respReader := io.Reader(resp.Body)
+	if strings.EqualFold(strings.TrimSpace(resp.Header.Get("Content-Encoding")), "gzip") {
+		gzipReader, errGzip := gzip.NewReader(resp.Body)
+		if errGzip != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to decode gzip response"})
+			return
+		}
+		defer func() {
+			if errClose := gzipReader.Close(); errClose != nil {
+				log.Errorf("gzip reader close error: %v", errClose)
+			}
+		}()
+		respReader = gzipReader
+	}
+	respBody, errReadAll := io.ReadAll(respReader)
 	if errReadAll != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
@@ -215,6 +222,57 @@ func (h *Handler) APICall(c *gin.Context) {
 		Header:     resp.Header,
 		Body:       string(respBody),
 	})
+}
+
+func (h *Handler) resolveAPICallReplacements(ctx context.Context, auth *coreauth.Auth, urlStr, dataStr string, headers map[string]string) (map[string]string, error) {
+	combined := strings.Builder{}
+	combined.WriteString(urlStr)
+	combined.WriteString(dataStr)
+	for _, value := range headers {
+		combined.WriteString(value)
+	}
+	text := combined.String()
+	replacements := make(map[string]string)
+
+	if strings.Contains(text, "$TOKEN$") {
+		token, tokenErr := h.resolveTokenForAuth(ctx, auth)
+		if auth != nil && token == "" {
+			if tokenErr != nil {
+				return nil, fmt.Errorf("auth token refresh failed")
+			}
+			return nil, fmt.Errorf("auth token not found")
+		}
+		if token != "" {
+			replacements["$TOKEN$"] = token
+		}
+	}
+
+	if strings.Contains(text, "$PROFILE_ARN$") || strings.Contains(text, url.QueryEscape("$PROFILE_ARN$")) {
+		profileArn, profileErr := h.resolveProfileArnForAuth(ctx, auth)
+		if auth != nil && profileArn == "" {
+			if profileErr != nil {
+				return nil, fmt.Errorf("auth profile arn refresh failed")
+			}
+			return nil, fmt.Errorf("auth profile arn not found")
+		}
+		if profileArn != "" {
+			replacements["$PROFILE_ARN$"] = profileArn
+		}
+	}
+
+	return replacements, nil
+}
+
+func applyAPICallReplacements(value string, replacements map[string]string) string {
+	if value == "" || len(replacements) == 0 {
+		return value
+	}
+	out := value
+	for placeholder, replacement := range replacements {
+		out = strings.ReplaceAll(out, placeholder, replacement)
+		out = strings.ReplaceAll(out, url.QueryEscape(placeholder), url.QueryEscape(replacement))
+	}
+	return out
 }
 
 func firstNonEmptyString(values ...*string) string {
@@ -263,8 +321,39 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth) 
 		token, errToken := h.refreshAntigravityOAuthAccessToken(ctx, auth)
 		return token, errToken
 	}
+	if provider == "kiro" {
+		token, tokenErr := h.refreshKiroOAuthAccessToken(ctx, auth)
+		return token, tokenErr
+	}
 
 	return tokenValueForAuth(auth), nil
+}
+
+func (h *Handler) resolveProfileArnForAuth(ctx context.Context, auth *coreauth.Auth) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if auth == nil {
+		return "", nil
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	if provider != "kiro" {
+		return stringValue(auth.Metadata, "profile_arn"), nil
+	}
+
+	storage := kiroStorageFromAPICallMetadata(auth.Metadata)
+	if storage.ProfileArn != "" && !storage.NeedsRefresh() {
+		return storage.ProfileArn, nil
+	}
+
+	if storage.RefreshToken != "" {
+		if _, errRefresh := h.refreshKiroOAuthAccessToken(ctx, auth); errRefresh != nil {
+			return storage.ProfileArn, errRefresh
+		}
+		storage = kiroStorageFromAPICallMetadata(auth.Metadata)
+	}
+	return storage.ProfileArn, nil
 }
 
 func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
@@ -850,4 +939,124 @@ func buildProxyTransport(proxyStr string) *http.Transport {
 		return nil
 	}
 	return transport
+}
+
+func (h *Handler) refreshKiroOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if auth == nil {
+		return "", nil
+	}
+	metadata := auth.Metadata
+	if len(metadata) == 0 {
+		return tokenValueForAuth(auth), nil
+	}
+
+	storage := kiroStorageFromAPICallMetadata(metadata)
+
+	if !storage.NeedsRefresh() {
+		if storage.AccessToken != "" {
+			return storage.AccessToken, nil
+		}
+		return tokenValueForAuth(auth), nil
+	}
+
+	svc := kiro.NewKiroAuthWithProxyURL(h.cfg, auth.ProxyURL)
+	refreshed, errRefresh := svc.RefreshToken(ctx, storage)
+	if errRefresh != nil {
+		log.WithError(errRefresh).Warn("kiro token refresh failed, using cached token")
+		if storage.AccessToken != "" {
+			return storage.AccessToken, nil
+		}
+		return tokenValueForAuth(auth), nil
+	}
+
+	now := time.Now()
+	auth.Metadata["access_token"] = refreshed.AccessToken
+	if refreshed.RefreshToken != "" {
+		auth.Metadata["refresh_token"] = refreshed.RefreshToken
+	}
+	if refreshed.ExpiresAt != "" {
+		auth.Metadata["expires_at"] = refreshed.ExpiresAt
+	}
+	auth.Metadata["auth_method"] = refreshed.AuthMethod
+	auth.Metadata["type"] = "kiro"
+	auth.Metadata["last_refresh"] = now.Format(time.RFC3339)
+	if refreshed.ProfileArn != "" {
+		auth.Metadata["profile_arn"] = refreshed.ProfileArn
+	}
+	updateKiroNestedTokenForAPICall(auth.Metadata, refreshed)
+
+	if h != nil && h.authManager != nil {
+		auth.LastRefreshedAt = now
+		auth.UpdatedAt = now
+		_, _ = h.authManager.Update(ctx, auth)
+	}
+
+	return refreshed.AccessToken, nil
+}
+
+func kiroStorageFromAPICallMetadata(metadata map[string]any) *kiro.KiroTokenStorage {
+	storage := &kiro.KiroTokenStorage{
+		AuthMethod: "social",
+		Region:     kiro.DefaultRegion,
+		Type:       "kiro",
+	}
+	if len(metadata) == 0 {
+		return storage
+	}
+
+	getString := func(keys ...string) string {
+		for _, key := range keys {
+			if v := stringValue(metadata, key); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+
+	storage.AccessToken = getString("access_token", "accessToken")
+	storage.RefreshToken = getString("refresh_token", "refreshToken")
+	storage.AuthMethod = getString("auth_method", "authMethod")
+	if strings.EqualFold(storage.AuthMethod, "sso") || strings.EqualFold(storage.AuthMethod, "builderid") || strings.EqualFold(storage.AuthMethod, "builder_id") {
+		storage.AuthMethod = "oidc"
+	}
+	if storage.AuthMethod == "" {
+		storage.AuthMethod = "social"
+	}
+	storage.Region = getString("region", "idc_region", "idcRegion")
+	if storage.Region == "" {
+		storage.Region = kiro.DefaultRegion
+	}
+	storage.ClientID = getString("client_id", "clientId")
+	storage.ClientSecret = getString("client_secret", "clientSecret")
+	storage.ExpiresAt = getString("expires_at", "expiresAt")
+	storage.ProfileArn = getString("profile_arn", "profileArn")
+	if storage.ProfileArn == "" && storage.AuthMethod == "oidc" {
+		storage.ProfileArn = kiro.DefaultBuilderIDProfileArn
+	}
+	return storage
+}
+
+func updateKiroNestedTokenForAPICall(metadata map[string]any, refreshed *kiro.KiroTokenStorage) {
+	if metadata == nil || refreshed == nil {
+		return
+	}
+	tokenMap, _ := metadata["token"].(map[string]any)
+	if tokenMap == nil {
+		tokenMap = make(map[string]any)
+	}
+	if refreshed.AccessToken != "" {
+		tokenMap["access_token"] = refreshed.AccessToken
+	}
+	if refreshed.RefreshToken != "" {
+		tokenMap["refresh_token"] = refreshed.RefreshToken
+	}
+	if refreshed.ExpiresAt != "" {
+		tokenMap["expires_at"] = refreshed.ExpiresAt
+	}
+	if len(tokenMap) > 0 {
+		metadata["token"] = tokenMap
+	}
 }

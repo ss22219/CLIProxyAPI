@@ -1,15 +1,16 @@
 package kiro
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
+	_ "modernc.org/sqlite"
 )
 
 // KiroCliCredentials holds credentials read from the kiro-cli SQLite database.
@@ -163,38 +164,35 @@ func kiroCliDBPath() string {
 	return filepath.Join(home, ".local", "share", "Kiro-Cli", "data.sqlite3")
 }
 
-// queryKVExact queries the auth_kv table for an exact key using the sqlite3 CLI.
-// The key is passed via the command line; sqlite3 treats it as a literal value.
+// queryKVExact queries the auth_kv table for an exact key.
 func queryKVExact(dbPath, key string) (string, error) {
-	sqlite3Path, err := findSqlite3()
-	if err != nil {
-		return "", err
-	}
-	// Escape single quotes in the key for SQL safety. Keys in kiro-cli are
-	// internal constants so this is belt-and-suspenders.
-	safeKey := strings.ReplaceAll(key, "'", "''")
-	query := fmt.Sprintf("SELECT value FROM auth_kv WHERE key='%s';", safeKey)
-	cmd := exec.Command(sqlite3Path, dbPath, query)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("sqlite3 query failed: %w", err)
-	}
-	return strings.TrimSpace(string(out)), nil
+	return querySQLiteValue(dbPath, "SELECT value FROM auth_kv WHERE key = ?", key)
 }
 
 func queryStateExact(dbPath, key string) (string, error) {
-	sqlite3Path, err := findSqlite3()
+	return querySQLiteValue(dbPath, "SELECT value FROM state WHERE key = ?", key)
+}
+
+func querySQLiteValue(dbPath, query, key string) (string, error) {
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("open sqlite database: %w", err)
 	}
-	safeKey := strings.ReplaceAll(key, "'", "''")
-	query := fmt.Sprintf("SELECT value FROM state WHERE key='%s';", safeKey)
-	cmd := exec.Command(sqlite3Path, dbPath, query)
-	out, err := cmd.Output()
+	defer func() {
+		if errClose := db.Close(); errClose != nil {
+			log.Debugf("kiro: failed to close sqlite database: %v", errClose)
+		}
+	}()
+
+	var value string
+	err = db.QueryRow(query, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
 	if err != nil {
-		return "", fmt.Errorf("sqlite3 query failed: %w", err)
+		return "", fmt.Errorf("sqlite query failed: %w", err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(value), nil
 }
 
 // readProfileArnFromState reads api.codewhisperer.profile from the state table
@@ -215,26 +213,4 @@ func readProfileArnFromState(dbPath string) string {
 		return v
 	}
 	return ""
-}
-
-// findSqlite3 locates the sqlite3 CLI binary.
-func findSqlite3() (string, error) {
-	path, err := exec.LookPath("sqlite3")
-	if err == nil {
-		return path, nil
-	}
-	// On Windows, check common locations
-	if runtime.GOOS == "windows" {
-		candidates := []string{
-			filepath.Join(os.Getenv("ProgramFiles"), "SQLite", "sqlite3.exe"),
-			filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "sqlite3", "sqlite3.exe"),
-			filepath.Join(os.Getenv("LOCALAPPDATA"), "Android", "Sdk", "platform-tools", "sqlite3.exe"),
-		}
-		for _, c := range candidates {
-			if _, statErr := os.Stat(c); statErr == nil {
-				return c, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("sqlite3 CLI not found in PATH")
 }

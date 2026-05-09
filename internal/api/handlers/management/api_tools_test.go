@@ -157,6 +157,82 @@ func TestAPICallTransportAPIKeyAuthFallsBackToConfigProxyURL(t *testing.T) {
 	}
 }
 
+func TestKiroStorageFromAPICallMetadataNormalizesAgentsNetFields(t *testing.T) {
+	t.Parallel()
+
+	storage := kiroStorageFromAPICallMetadata(map[string]any{
+		"accessToken":  "access",
+		"refreshToken": "refresh",
+		"authMethod":   "builderid",
+		"idcRegion":    "us-west-2",
+		"clientId":     "client-id",
+		"clientSecret": "client-secret",
+		"expiresAt":    "2026-05-09T10:00:00Z",
+	})
+
+	if storage.AccessToken != "access" {
+		t.Fatalf("AccessToken = %q, want access", storage.AccessToken)
+	}
+	if storage.RefreshToken != "refresh" {
+		t.Fatalf("RefreshToken = %q, want refresh", storage.RefreshToken)
+	}
+	if storage.AuthMethod != "oidc" {
+		t.Fatalf("AuthMethod = %q, want oidc", storage.AuthMethod)
+	}
+	if storage.Region != "us-west-2" {
+		t.Fatalf("Region = %q, want us-west-2", storage.Region)
+	}
+	if storage.ClientID != "client-id" || storage.ClientSecret != "client-secret" {
+		t.Fatalf("client material = %q/%q, want client-id/client-secret", storage.ClientID, storage.ClientSecret)
+	}
+	if storage.ProfileArn == "" {
+		t.Fatal("ProfileArn should default for builderid/OIDC credentials")
+	}
+}
+
+func TestKiroStorageFromAPICallMetadataReadsNestedSocialToken(t *testing.T) {
+	t.Parallel()
+
+	storage := kiroStorageFromAPICallMetadata(map[string]any{
+		"auth_method": "social",
+		"token": map[string]any{
+			"access_token":  "nested-access",
+			"refresh_token": "nested-refresh",
+			"expires_at":    "2026-05-09T10:00:00Z",
+			"profile_arn":   "arn:test",
+		},
+	})
+
+	if storage.AccessToken != "nested-access" {
+		t.Fatalf("AccessToken = %q, want nested-access", storage.AccessToken)
+	}
+	if storage.RefreshToken != "nested-refresh" {
+		t.Fatalf("RefreshToken = %q, want nested-refresh", storage.RefreshToken)
+	}
+	if storage.ProfileArn != "arn:test" {
+		t.Fatalf("ProfileArn = %q, want arn:test", storage.ProfileArn)
+	}
+	if storage.AuthMethod != "social" {
+		t.Fatalf("AuthMethod = %q, want social", storage.AuthMethod)
+	}
+}
+
+func TestApplyAPICallReplacementsHandlesEscapedProfileArn(t *testing.T) {
+	t.Parallel()
+
+	replacements := map[string]string{
+		"$PROFILE_ARN$": "arn:aws:codewhisperer:us-east-1:123:profile/A/B",
+	}
+	got := applyAPICallReplacements(
+		"https://q.us-east-1.amazonaws.com/?origin=KIRO_CLI&profileArn=%24PROFILE_ARN%24",
+		replacements,
+	)
+	want := "https://q.us-east-1.amazonaws.com/?origin=KIRO_CLI&profileArn=arn%3Aaws%3Acodewhisperer%3Aus-east-1%3A123%3Aprofile%2FA%2FB"
+	if got != want {
+		t.Fatalf("replacement = %q, want %q", got, want)
+	}
+}
+
 func TestAuthByIndexDistinguishesSharedAPIKeysAcrossProviders(t *testing.T) {
 	t.Parallel()
 

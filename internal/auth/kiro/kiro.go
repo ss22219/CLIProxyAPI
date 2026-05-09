@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -100,6 +101,9 @@ func (k *KiroAuth) refreshSocial(ctx context.Context, storage *KiroTokenStorage,
 		return nil, fmt.Errorf("kiro: create social refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Kiro-CLI")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := k.httpClient.Do(req)
 	if err != nil {
@@ -180,6 +184,8 @@ func (k *KiroAuth) refreshOIDC(ctx context.Context, storage *KiroTokenStorage, r
 		return nil, fmt.Errorf("kiro: create OIDC refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
+	req.Header.Set("amz-sdk-request", "attempt=1; max=4")
 
 	resp, err := k.httpClient.Do(req)
 	if err != nil {
