@@ -334,6 +334,16 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
+				if authMethod := strings.TrimSpace(gjson.GetBytes(data, "auth_method").String()); authMethod != "" {
+					fileData["auth_method"] = authMethod
+				}
+				if profileArn := strings.TrimSpace(gjson.GetBytes(data, "profile_arn").String()); profileArn != "" {
+					fileData["profile_arn"] = profileArn
+				}
+				if strings.TrimSpace(gjson.GetBytes(data, "api_key").String()) != "" {
+					fileData["has_api_key"] = true
+					fileData["account_type"] = "api_key"
+				}
 				if pv := gjson.GetBytes(data, "priority"); pv.Exists() {
 					switch pv.Type {
 					case gjson.Number:
@@ -400,6 +410,18 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			entry["account"] = account
 		}
 	}
+	if authMethod := firstAuthFileMetadataString(auth, "auth_method", "authMethod"); authMethod != "" {
+		entry["auth_method"] = authMethod
+	}
+	if profileArn := firstAuthFileMetadataString(auth, "profile_arn", "profileArn"); profileArn != "" {
+		entry["profile_arn"] = profileArn
+	}
+	if hasKiroAPIKeyAuthFile(auth) {
+		entry["has_api_key"] = true
+		if _, ok := entry["account_type"]; !ok {
+			entry["account_type"] = "api_key"
+		}
+	}
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
 	}
@@ -464,6 +486,48 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		}
 	}
 	return entry
+}
+
+func firstAuthFileMetadataString(auth *coreauth.Auth, keys ...string) string {
+	if auth == nil {
+		return ""
+	}
+	for _, key := range keys {
+		if auth.Attributes != nil {
+			if v := strings.TrimSpace(auth.Attributes[key]); v != "" {
+				return v
+			}
+		}
+		if auth.Metadata != nil {
+			if v, ok := auth.Metadata[key].(string); ok && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+			if tokenMap, ok := auth.Metadata["token"].(map[string]any); ok && tokenMap != nil {
+				if v, ok := tokenMap[key].(string); ok && strings.TrimSpace(v) != "" {
+					return strings.TrimSpace(v)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func hasKiroAPIKeyAuthFile(auth *coreauth.Auth) bool {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "kiro") {
+		return false
+	}
+	if strings.EqualFold(firstAuthFileMetadataString(auth, "auth_method", "authMethod"), "api_key") {
+		return true
+	}
+	if auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != "" {
+		return true
+	}
+	if auth.Metadata != nil {
+		if v, ok := auth.Metadata["api_key"].(string); ok && strings.TrimSpace(v) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
