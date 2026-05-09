@@ -73,11 +73,21 @@ func TestFetchModels_HeadersWiring(t *testing.T) {
 	}
 }
 
-func TestFetchModels_RequiresProfileArn(t *testing.T) {
+func TestFetchModels_AllowsEmptyProfileArnForAPIKey(t *testing.T) {
 	svc := NewKiroAuth(nil)
 	_, err := svc.FetchModels(context.Background(), "test-token", "")
-	if err == nil || !strings.Contains(err.Error(), "profileArn required") {
-		t.Fatalf("expected profileArn required error, got %v", err)
+	if err == nil || strings.Contains(err.Error(), "profileArn required") {
+		t.Fatalf("FetchModels error = %v, want no profileArn validation error", err)
+	}
+}
+
+func TestListAvailableModelsURLOmitsEmptyProfileArn(t *testing.T) {
+	got := listAvailableModelsURL(DefaultRegion, "")
+	if strings.Contains(got, "profileArn=") {
+		t.Fatalf("url = %q, want no profileArn query", got)
+	}
+	if !strings.Contains(got, "origin=KIRO_CLI") {
+		t.Fatalf("url = %q, want origin query", got)
 	}
 }
 

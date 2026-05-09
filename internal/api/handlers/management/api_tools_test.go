@@ -217,6 +217,37 @@ func TestKiroStorageFromAPICallMetadataReadsNestedSocialToken(t *testing.T) {
 	}
 }
 
+func TestKiroAPICallAPIKeyDoesNotUseProfileArnOrRefresh(t *testing.T) {
+	t.Parallel()
+
+	auth := &coreauth.Auth{
+		Provider:   "kiro",
+		Attributes: map[string]string{"api_key": "ksk_test"},
+		Metadata: map[string]any{
+			"type":        "kiro",
+			"auth_method": "api_key",
+			"api_key":     "ksk_test",
+		},
+	}
+	h := &Handler{}
+
+	token, errToken := h.resolveTokenForAuth(context.Background(), auth)
+	if errToken != nil {
+		t.Fatalf("resolveTokenForAuth returned error: %v", errToken)
+	}
+	if token != "ksk_test" {
+		t.Fatalf("token = %q, want ksk_test", token)
+	}
+
+	profileArn, errProfile := h.resolveProfileArnForAuth(context.Background(), auth)
+	if errProfile != nil {
+		t.Fatalf("resolveProfileArnForAuth returned error: %v", errProfile)
+	}
+	if profileArn != "" {
+		t.Fatalf("profileArn = %q, want empty", profileArn)
+	}
+}
+
 func TestApplyAPICallReplacementsHandlesEscapedProfileArn(t *testing.T) {
 	t.Parallel()
 

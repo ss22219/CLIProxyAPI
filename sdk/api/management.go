@@ -18,6 +18,7 @@ type ManagementTokenRequester interface {
 	RequestCodexToken(*gin.Context)
 	RequestAntigravityToken(*gin.Context)
 	RequestKiroToken(*gin.Context)
+	CreateKiroAPIKeyCredential(*gin.Context)
 	RequestKimiToken(*gin.Context)
 	GetAuthStatus(c *gin.Context)
 	PostOAuthCallback(c *gin.Context)
@@ -52,6 +53,10 @@ func (m *managementTokenRequester) RequestAntigravityToken(c *gin.Context) {
 
 func (m *managementTokenRequester) RequestKiroToken(c *gin.Context) {
 	m.handler.RequestKiroToken(c)
+}
+
+func (m *managementTokenRequester) CreateKiroAPIKeyCredential(c *gin.Context) {
+	m.handler.CreateKiroAPIKeyCredential(c)
 }
 
 func (m *managementTokenRequester) RequestKimiToken(c *gin.Context) {

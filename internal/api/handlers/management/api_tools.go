@@ -322,6 +322,9 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth) 
 		return token, errToken
 	}
 	if provider == "kiro" {
+		if isKiroAPIKeyManagementAuth(auth) {
+			return tokenValueForAuth(auth), nil
+		}
 		token, tokenErr := h.refreshKiroOAuthAccessToken(ctx, auth)
 		return token, tokenErr
 	}
@@ -340,6 +343,9 @@ func (h *Handler) resolveProfileArnForAuth(ctx context.Context, auth *coreauth.A
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 	if provider != "kiro" {
 		return stringValue(auth.Metadata, "profile_arn"), nil
+	}
+	if isKiroAPIKeyManagementAuth(auth) {
+		return "", nil
 	}
 
 	storage := kiroStorageFromAPICallMetadata(auth.Metadata)
@@ -948,6 +954,9 @@ func (h *Handler) refreshKiroOAuthAccessToken(ctx context.Context, auth *coreaut
 	if auth == nil {
 		return "", nil
 	}
+	if isKiroAPIKeyManagementAuth(auth) {
+		return tokenValueForAuth(auth), nil
+	}
 	metadata := auth.Metadata
 	if len(metadata) == 0 {
 		return tokenValueForAuth(auth), nil
@@ -1016,9 +1025,14 @@ func kiroStorageFromAPICallMetadata(metadata map[string]any) *kiro.KiroTokenStor
 		return ""
 	}
 
-	storage.AccessToken = getString("access_token", "accessToken")
+	storage.AccessToken = getString("api_key", "access_token", "accessToken")
 	storage.RefreshToken = getString("refresh_token", "refreshToken")
 	storage.AuthMethod = getString("auth_method", "authMethod")
+	if strings.EqualFold(storage.AuthMethod, "api_key") || (storage.AccessToken != "" && strings.HasPrefix(storage.AccessToken, "ksk_")) {
+		storage.AuthMethod = "api_key"
+		storage.ProfileArn = ""
+		return storage
+	}
 	if strings.EqualFold(storage.AuthMethod, "sso") || strings.EqualFold(storage.AuthMethod, "builderid") || strings.EqualFold(storage.AuthMethod, "builder_id") {
 		storage.AuthMethod = "oidc"
 	}
@@ -1037,6 +1051,22 @@ func kiroStorageFromAPICallMetadata(metadata map[string]any) *kiro.KiroTokenStor
 		storage.ProfileArn = kiro.DefaultBuilderIDProfileArn
 	}
 	return storage
+}
+
+func isKiroAPIKeyManagementAuth(auth *coreauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != "" {
+		return true
+	}
+	if auth.Metadata == nil {
+		return false
+	}
+	if strings.EqualFold(stringValue(auth.Metadata, "auth_method"), "api_key") {
+		return true
+	}
+	return stringValue(auth.Metadata, "api_key") != ""
 }
 
 func updateKiroNestedTokenForAPICall(metadata map[string]any, refreshed *kiro.KiroTokenStorage) {

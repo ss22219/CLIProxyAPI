@@ -36,15 +36,14 @@ func (k *KiroAuth) FetchModels(ctx context.Context, accessToken, profileArn stri
 		return nil, fmt.Errorf("kiro: access token required for ListAvailableModels")
 	}
 	trimmedProfileArn := strings.TrimSpace(profileArn)
-	if trimmedProfileArn == "" {
-		return nil, fmt.Errorf("kiro: profileArn required for ListAvailableModels")
-	}
 
 	region := DefaultRegion
 	endpointURL := listAvailableModelsURL(region, trimmedProfileArn)
 
 	body := map[string]string{"origin": "KIRO_CLI"}
-	body["profileArn"] = trimmedProfileArn
+	if trimmedProfileArn != "" {
+		body["profileArn"] = trimmedProfileArn
+	}
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("kiro: marshal ListAvailableModels request: %w", err)

@@ -8,6 +8,7 @@
 > - §9 Social Refresh 实测更正：UA、Accept、HTTP/2、响应多一个 `profileArn`、**走 HTTPS_PROXY**
 > - §12 Toolkit Telemetry 依然在 2.2.2 中活跃，补齐 4 个 metric 的真实字段集
 > - §2 凭证存储表按 Social / SSO 两种登录方式拆开
+> - 2026-05-09 增补 §14 额度查询 `GetUsageLimits`，§15 Headless API key 模式（`KIRO_API_KEY`）
 
 ## 目录
 
@@ -24,6 +25,8 @@
 11. [响应流事件格式](#11-响应流事件格式)
 12. [client-telemetry（Toolkit 遥测）](#12-client-telemetry)
 13. [启动时版本检查 manifest.json](#13-启动时版本检查)
+14. [GetUsageLimits — 额度查询](#14-getusagelimits)
+15. [Headless API key 模式](#15-headless-api-key-模式)
 
 ---
 
@@ -36,6 +39,7 @@ Kiro API 基于 AWS CodeWhisperer 服务，通过 `x-amz-target` header 区分�
 | Q API（聊天/遥测/配置） | `https://q.{region}.amazonaws.com/` | Bearer Token |
 | OIDC（SSO 令牌刷新） | `https://oidc.{region}.amazonaws.com/token` | Client Credentials |
 | Social（社交登录刷新） | `https://prod.{region}.auth.desktop.kiro.dev/refreshToken` | Refresh Token |
+| Headless API key | 环境变量 `KIRO_API_KEY` | 直接作为 Q API Bearer Token |
 | Toolkit Telemetry | `https://client-telemetry.{region}.amazonaws.com/metrics` | AWS SigV4 |
 | 版本清单 | `https://desktop-release.q.{region}.amazonaws.com/latest/manifest.json` | 无 |
 
@@ -109,6 +113,7 @@ kiro-cli 凭证存储在 SQLite 数据库中：
 | SendTelemetryEvent | `AmazonCodeWhispererService.SendTelemetryEvent` | `codewhispererruntime` | 遥测上报 |
 | GetProfile | `AmazonCodeWhispererService.GetProfile` | `codewhispererruntime` | 获取用户配置 |
 | ListAvailableModels | `AmazonCodeWhispererService.ListAvailableModels` | `codewhispererruntime` | 获取可用模型 |
+| GetUsageLimits | `AmazonCodeWhispererService.GetUsageLimits` | `codewhispererruntime` | 查询 Credit 额度 |
 
 ### 公共 Headers（所有 Q API 共享）
 
@@ -890,3 +895,252 @@ accept-encoding: gzip
 | `packages[].channel` | 目前观察到 `stable` 一种 |
 
 CLI 比对 `version` 和本地版本，若不同则在下次运行时提示升级。此请求是 **lifecycle 第一次网络活动**（在 OIDC/Social refresh 之前），**走 `HTTPS_PROXY`**。
+
+---
+
+## 14. GetUsageLimits
+
+Kiro Pro / social profile 可通过此接口查询真实 Credit 额度。该接口由 `kiro-cli profile` 触发；`chat --list-models`
+不会调用额度接口。
+
+### 请求
+
+```http
+POST https://q.us-east-1.amazonaws.com/?profileArn={encoded_arn}&origin=KIRO_CLI&isEmailRequired=true
+content-type: application/x-amz-json-1.0
+x-amz-target: AmazonCodeWhispererService.GetUsageLimits
+authorization: Bearer {accessToken}
+user-agent: aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 md/appVersion-2.2.2 app/AmazonQ-For-CLI
+x-amz-user-agent: aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 m/F app/AmazonQ-For-CLI
+x-amzn-codewhisperer-optout: false
+accept: */*
+accept-encoding: gzip
+```
+
+```json
+{
+  "profileArn": "arn:aws:codewhisperer:us-east-1:XXXX:profile/XXXX",
+  "origin": "KIRO_CLI",
+  "isEmailRequired": true
+}
+```
+
+### 响应
+
+```json
+{
+  "nextDateReset": 1780272000,
+  "overageConfiguration": {
+    "overageStatus": "ENABLED"
+  },
+  "subscriptionInfo": {
+    "overageCapability": "OVERAGE_CAPABLE",
+    "subscriptionManagementTarget": "MANAGE",
+    "subscriptionTitle": "KIRO PRO",
+    "type": "Q_DEVELOPER_STANDALONE_PRO",
+    "upgradeCapability": "UPGRADE_CAPABLE"
+  },
+  "usageBreakdownList": [
+    {
+      "resourceType": "CREDIT",
+      "displayName": "Credit",
+      "displayNamePlural": "Credits",
+      "unit": "INVOCATIONS",
+      "currentUsage": 1280,
+      "currentUsageWithPrecision": 1280.59,
+      "usageLimit": 1000,
+      "usageLimitWithPrecision": 1000.0,
+      "currentOverages": 280,
+      "currentOveragesWithPrecision": 280.59,
+      "overageCap": 10000,
+      "overageCapWithPrecision": 10000.0,
+      "overageRate": 0.04,
+      "overageCharges": 11.223844038744,
+      "currency": "USD",
+      "nextDateReset": 1780272000,
+      "bonuses": []
+    }
+  ],
+  "userInfo": {
+    "email": "user@example.com",
+    "userId": "d-..."
+  }
+}
+```
+
+### 规则与错误
+
+| 场景 | 行为 |
+|------|------|
+| social / Pro profile | 返回 `subscriptionInfo` 和 `usageBreakdownList` |
+| API key / headless | `kiro-cli profile -vv` 先调用 `GetProfile`，API key 模式下失败（`GetProfile failed on all endpoints for API key`），CLI 返回 `This command is only available for Pro users`；未观察到可用的 API key 额度查询路径 |
+| 不支持额度的 SSO / BuilderId profile | 可能返回 `AccessDeniedException` / `FEATURE_NOT_SUPPORTED` |
+| 缺失或错误 profileArn | 返回 `ValidationException` 或访问拒绝 |
+
+前端额度页应展示 `usageBreakdownList[]` 中的 `resourceType`、`currentUsageWithPrecision`、
+`usageLimitWithPrecision`、`currentOveragesWithPrecision`、`overageCharges`、`currency`、`nextDateReset`
+以及 `subscriptionInfo.subscriptionTitle/type`，而不是用 `ListAvailableModels` 伪装额度。
+
+---
+
+## 15. Headless API key 模式
+
+官方 Headless 文档（`https://kiro.dev/docs/cli/headless/`）要求在无浏览器/CI 场景通过环境变量
+`KIRO_API_KEY` 提供 API key。2026-05-09 使用 Kiro CLI 2.2.2 + mitmproxy 隔离
+`USERPROFILE` / `LOCALAPPDATA` / `APPDATA` 后实测，API key 模式与 OAuth/Social 模式有明显差异。
+
+### 认证方式
+
+API key 不会先换取 `aoa...` access token；CLI 直接把环境变量值作为 Q API Bearer token：
+
+```http
+authorization: Bearer ksk_...
+```
+
+因此本地代理实现 API key 支持时，不应走 OIDC refresh、Social refresh，也不应要求本地 SQLite token。
+只需要把配置中的 Kiro API key 写入 `Authorization: Bearer {apiKey}`。
+
+### 模型列表
+
+API key 模式下 `ListAvailableModels` 不带 `profileArn`，query 与 body 都只保留 `origin=KIRO_CLI`：
+
+```http
+POST https://q.us-east-1.amazonaws.com/?origin=KIRO_CLI
+x-amz-target: AmazonCodeWhispererService.ListAvailableModels
+authorization: Bearer ksk_...
+content-type: application/x-amz-json-1.0
+```
+
+```json
+{
+  "origin": "KIRO_CLI"
+}
+```
+
+实测返回 `200` 和完整模型列表。与 OAuth/Social 模式不同，API key 模式不需要默认 BuilderId
+profile ARN，也不需要 social `profile_arn`。
+
+### 聊天
+
+API key 模式下 `GenerateAssistantResponse` 同样不带顶层 `profileArn`：
+
+```http
+POST https://q.us-east-1.amazonaws.com/
+x-amz-target: AmazonCodeWhispererStreamingService.GenerateAssistantResponse
+authorization: Bearer ksk_...
+content-type: application/x-amz-json-1.0
+```
+
+```jsonc
+{
+  "conversationState": {
+    "conversationId": "{uuid}",
+    "history": [],
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "hello",
+        "origin": "KIRO_CLI",
+        "modelId": "auto",
+        "userInputMessageContext": {
+          "envState": { "operatingSystem": "windows", "currentWorkingDirectory": "C:\\..." },
+          "tools": []
+        }
+      }
+    }
+  }
+}
+```
+
+响应仍然是 `application/vnd.amazon.eventstream`，事件格式与 §11 相同。
+
+### SendTelemetryEvent
+
+API key 模式下 Q API 遥测也不带 `profileArn`：
+
+```http
+POST https://q.us-east-1.amazonaws.com/
+x-amz-target: AmazonCodeWhispererService.SendTelemetryEvent
+authorization: Bearer ksk_...
+```
+
+```jsonc
+{
+  "clientToken": "{uuid}",
+  "telemetryEvent": {
+    "chatAddMessageEvent": {
+      "conversationId": "{uuid}",
+      "messageId": "{uuid}",
+      "timeToFirstChunkMilliseconds": 2323.0624,
+      "timeBetweenChunks": [0.0086, 0.004, 0.0041, 0.0015],
+      "responseLength": 2
+    }
+  },
+  "optOutPreference": "OPTIN",
+  "userContext": {
+    "ideCategory": "CLI",
+    "operatingSystem": "WINDOWS",
+    "product": "CodeWhisperer",
+    "clientId": "{persistent_uuid}",
+    "ideVersion": "2.2.2"
+  },
+  "modelId": "auto"
+}
+```
+
+### GetProfile 行为
+
+API key 模式启动时 CLI 仍会尝试 `GetProfile`：
+
+```http
+POST https://q.us-east-1.amazonaws.com/
+x-amz-target: AmazonCodeWhispererService.GetProfile
+authorization: Bearer ksk_...
+```
+
+```json
+{}
+```
+
+隔离环境实测 `us-east-1` 和 `eu-central-1` 均返回 `403 AccessDeniedException`，但 CLI 继续执行；
+随后 `ListAvailableModels` 和聊天请求正常成功。实现时应把这种 profile 探测失败视为非致命。
+
+### Toolkit telemetry
+
+API key 模式仍会使用 Cognito 匿名身份获取 SigV4 临时凭证并发送 Toolkit telemetry：
+
+```http
+POST https://cognito-identity.us-east-1.amazonaws.com/
+x-amz-target: AWSCognitoIdentityService.GetId
+```
+
+```json
+{
+  "IdentityPoolId": "us-east-1:820fd6d1-95c0-4ca4-bffb-3f01d32da842"
+}
+```
+
+随后调用：
+
+```http
+POST https://cognito-identity.us-east-1.amazonaws.com/
+x-amz-target: AWSCognitoIdentityService.GetCredentialsForIdentity
+```
+
+再用返回的临时凭证 SigV4 签名 `client-telemetry.us-east-1.amazonaws.com/metrics`。该通道不使用
+`KIRO_API_KEY`。
+
+### 实现建议
+
+| 项目 | OAuth/Social | API key |
+|------|--------------|---------|
+| Credential 类型 | `kiro` OAuth token storage | `kiro` API key credential |
+| Authorization | `Bearer aoa...` | `Bearer ksk_...` |
+| Refresh | OIDC 或 Social refresh | 不刷新 |
+| profileArn | 必需；social/默认 BuilderId/profile cache | 不发送 |
+| ListAvailableModels query/body | `origin` + `profileArn` | 仅 `origin` |
+| GenerateAssistantResponse body | 顶层 `profileArn` | 无顶层 `profileArn` |
+| SendTelemetryEvent body | 含 `profileArn` | 无 `profileArn` |
+| GetProfile 失败 | 可能影响 profile 发现 | 403 非致命 |
+
+本地实现可将 API key 作为新的 Kiro auth kind 处理，运行时 executor 根据 auth kind 决定是否注入
+`profileArn`。不要把 `ksk_...` 写入日志、管理页错误、调试输出或 API 文档样例。

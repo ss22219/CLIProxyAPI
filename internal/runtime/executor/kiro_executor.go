@@ -59,6 +59,9 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	if auth == nil {
 		return nil, fmt.Errorf("kiro executor: auth is nil")
 	}
+	if isKiroAPIKeyAuth(auth) {
+		return auth, nil
+	}
 
 	storage := metadataToKiroStorage(auth.Metadata)
 	if strings.TrimSpace(storage.RefreshToken) == "" {
@@ -119,8 +122,19 @@ func updateNestedKiroToken(metadata map[string]any, result *kiroauth.KiroTokenSt
 
 // kiroAccessToken extracts the access token from auth metadata.
 func kiroAccessToken(auth *cliproxyauth.Auth) string {
-	if auth == nil || auth.Metadata == nil {
+	if auth == nil {
 		return ""
+	}
+	if auth.Attributes != nil {
+		if v := strings.TrimSpace(auth.Attributes["api_key"]); v != "" {
+			return v
+		}
+	}
+	if auth.Metadata == nil {
+		return ""
+	}
+	if v, ok := auth.Metadata["api_key"].(string); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
 	}
 	if v, ok := auth.Metadata["access_token"].(string); ok && v != "" {
 		return v
@@ -136,7 +150,7 @@ func kiroAccessToken(auth *cliproxyauth.Auth) string {
 
 // kiroProfileArn extracts the profileArn from auth metadata.
 func kiroProfileArn(auth *cliproxyauth.Auth) string {
-	if auth == nil || auth.Metadata == nil {
+	if auth == nil || isKiroAPIKeyAuth(auth) || auth.Metadata == nil {
 		return ""
 	}
 	if v, ok := auth.Metadata["profile_arn"].(string); ok {
@@ -159,12 +173,7 @@ func (e *KiroExecutor) FetchModels(ctx context.Context, auth *cliproxyauth.Auth)
 	if token == "" {
 		return nil, fmt.Errorf("kiro: no access token for model fetch")
 	}
-	var profileArn string
-	if auth != nil && auth.Metadata != nil {
-		if v, ok := auth.Metadata["profile_arn"].(string); ok {
-			profileArn = v
-		}
-	}
+	profileArn := kiroProfileArn(auth)
 	svc := kiroauth.NewKiroAuthWithProxyURL(e.cfg, auth.ProxyURL)
 	models, err := svc.FetchModels(ctx, token, profileArn)
 	if err != nil {
@@ -216,11 +225,18 @@ func metadataToKiroStorage(metadata map[string]any) *kiroauth.KiroTokenStorage {
 		return ""
 	}
 	s.AccessToken = getString("access_token")
+	if s.AccessToken == "" {
+		s.AccessToken = getString("api_key")
+	}
 	s.RefreshToken = getString("refresh_token")
 	s.ExpiresAt = getString("expires_at")
 	s.ProfileArn = getString("profile_arn")
 	if v := getString("auth_method"); v != "" {
 		s.AuthMethod = v
+	}
+	if strings.EqualFold(s.AuthMethod, "api_key") || (s.AccessToken != "" && strings.HasPrefix(s.AccessToken, "ksk_")) {
+		s.AuthMethod = "api_key"
+		s.ProfileArn = ""
 	}
 	if strings.EqualFold(s.AuthMethod, "sso") {
 		s.AuthMethod = "oidc"
@@ -238,4 +254,23 @@ func metadataToKiroStorage(metadata map[string]any) *kiroauth.KiroTokenStorage {
 	s.ClientID = getString("client_id")
 	s.ClientSecret = getString("client_secret")
 	return s
+}
+
+func isKiroAPIKeyAuth(auth *cliproxyauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != "" {
+		return true
+	}
+	if auth.Metadata == nil {
+		return false
+	}
+	if v, ok := auth.Metadata["auth_method"].(string); ok && strings.EqualFold(strings.TrimSpace(v), "api_key") {
+		return true
+	}
+	if v, ok := auth.Metadata["api_key"].(string); ok && strings.TrimSpace(v) != "" {
+		return true
+	}
+	return false
 }

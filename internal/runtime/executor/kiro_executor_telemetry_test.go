@@ -727,3 +727,22 @@ func TestTelemetryExportsAvailable(t *testing.T) {
 		t.Errorf("kiroProfileArn = %q, want arn:test", arn)
 	}
 }
+
+func TestKiroAccessTokenUsesAPIKeyAttributes(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		Provider:   "kiro",
+		Attributes: map[string]string{"api_key": "ksk_test"},
+		Metadata: map[string]any{
+			"access_token": "aoa_token",
+			"auth_method":  "api_key",
+			"profile_arn":  "arn:test",
+		},
+	}
+
+	if got := kiroAccessToken(auth); got != "ksk_test" {
+		t.Fatalf("kiroAccessToken = %q, want ksk_test", got)
+	}
+	if got := kiroProfileArn(auth); got != "" {
+		t.Fatalf("kiroProfileArn = %q, want empty for API key auth", got)
+	}
+}

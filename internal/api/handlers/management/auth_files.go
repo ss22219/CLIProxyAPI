@@ -2289,6 +2289,65 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 	})
 }
 
+func (h *Handler) CreateKiroAPIKeyCredential(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	var req struct {
+		APIKey string `json:"api_key"`
+		Label  string `json:"label"`
+	}
+	if errBind := c.ShouldBindJSON(&req); errBind != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	apiKey := strings.TrimSpace(req.APIKey)
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "api_key is required"})
+		return
+	}
+	label := strings.TrimSpace(req.Label)
+	if label == "" {
+		label = "Kiro API Key"
+	}
+
+	digest := sha256.Sum256([]byte(apiKey))
+	keyHash := hex.EncodeToString(digest[:])[:12]
+	fileName := fmt.Sprintf("kiro-api-key-%s.json", keyHash)
+	metadata := map[string]any{
+		"type":        "kiro",
+		"auth_method": "api_key",
+		"api_key":     apiKey,
+		"label":       label,
+		"created_at":  time.Now().UTC().Format(time.RFC3339),
+	}
+	record := &coreauth.Auth{
+		ID:       fileName,
+		Provider: "kiro",
+		FileName: fileName,
+		Label:    label,
+		Attributes: map[string]string{
+			"api_key":     apiKey,
+			"auth_method": "api_key",
+		},
+		Metadata: metadata,
+	}
+
+	savedPath, errSave := h.saveTokenRecord(ctx, record)
+	if errSave != nil {
+		log.Errorf("Failed to save Kiro API key credential: %v", errSave)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save kiro api key credential"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "ok",
+		"file":      fileName,
+		"auth_file": savedPath,
+	})
+}
+
 type projectSelectionRequiredError struct{}
 
 func (e *projectSelectionRequiredError) Error() string {
