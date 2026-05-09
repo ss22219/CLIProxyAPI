@@ -122,9 +122,13 @@ func (a KiroAuthenticator) loginFromSQLite(cfg *config.Config, opts *LoginOption
 		return nil, fmt.Errorf("kiro: failed to read kiro-cli credentials: %w", err)
 	}
 
-	authMethod := "social"
-	if strings.TrimSpace(creds.ClientID) != "" && strings.TrimSpace(creds.ClientSecret) != "" {
-		authMethod = "oidc"
+	authMethod := creds.AuthMethod
+	if authMethod == "" {
+		// Fallback: infer by presence of OIDC client material.
+		authMethod = "social"
+		if strings.TrimSpace(creds.ClientID) != "" && strings.TrimSpace(creds.ClientSecret) != "" {
+			authMethod = "oidc"
+		}
 	}
 
 	tokenStorage := &kiro.KiroTokenStorage{
@@ -135,6 +139,7 @@ func (a KiroAuthenticator) loginFromSQLite(cfg *config.Config, opts *LoginOption
 		ClientID:     creds.ClientID,
 		ClientSecret: creds.ClientSecret,
 		ExpiresAt:    creds.ExpiresAt,
+		ProfileArn:   creds.ProfileArn,
 		Type:         "kiro",
 	}
 
@@ -155,10 +160,16 @@ func (a KiroAuthenticator) loginFromSQLite(cfg *config.Config, opts *LoginOption
 	if creds.ExpiresAt != "" {
 		metadata["expires_at"] = creds.ExpiresAt
 	}
+	if creds.ProfileArn != "" {
+		metadata["profile_arn"] = creds.ProfileArn
+	}
+	if creds.Provider != "" {
+		metadata["provider"] = creds.Provider
+	}
 
 	fileName := fmt.Sprintf("kiro-%d.json", time.Now().UnixMilli())
 
-	log.Debugf("kiro: imported credentials (auth_method=%s, region=%s)", authMethod, creds.Region)
+	log.Debugf("kiro: imported credentials (auth_method=%s, region=%s, profile_arn_present=%t)", authMethod, creds.Region, creds.ProfileArn != "")
 	fmt.Printf("Kiro authentication imported successfully (method: %s)\n", authMethod)
 
 	return &coreauth.Auth{

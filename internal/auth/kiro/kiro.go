@@ -138,7 +138,11 @@ func (k *KiroAuth) refreshSocial(ctx context.Context, storage *KiroTokenStorage,
 		Region:       region,
 		ClientID:     storage.ClientID,
 		ClientSecret: storage.ClientSecret,
+		ProfileArn:   strings.TrimSpace(tokenResp.ProfileArn),
 		Type:         "kiro",
+	}
+	if result.ProfileArn == "" {
+		result.ProfileArn = storage.ProfileArn
 	}
 	if tokenResp.RefreshToken != "" {
 		result.RefreshToken = tokenResp.RefreshToken
@@ -209,6 +213,7 @@ func (k *KiroAuth) refreshOIDC(ctx context.Context, storage *KiroTokenStorage, r
 		Region:       region,
 		ClientID:     storage.ClientID,
 		ClientSecret: storage.ClientSecret,
+		ProfileArn:   storage.ProfileArn,
 		Type:         "kiro",
 	}
 	if tokenResp.RefreshToken != "" {

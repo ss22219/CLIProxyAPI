@@ -9,6 +9,8 @@
 package claude
 
 import (
+	"strings"
+
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/tidwall/gjson"
@@ -138,14 +140,20 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		return result, nil
 
 	case thinking.ModeAuto:
-		// For Claude 4.6 models, auto maps to adaptive thinking with upstream defaults.
+		// For Claude 4.6+ models, auto maps to adaptive thinking. A per-model
+		// default effort from the registry (ThinkingSupport.Default) is applied
+		// when set and listed in Levels; otherwise the effort field is omitted
+		// so the upstream provider picks its own default.
 		if supportsAdaptive {
 			result, _ := sjson.SetBytes(body, "thinking.type", "adaptive")
 			result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-			// Explicit effort is optional for adaptive thinking; omit it to allow upstream default.
-			result, _ = sjson.DeleteBytes(result, "output_config.effort")
-			if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
-				result, _ = sjson.DeleteBytes(result, "output_config")
+			if def := resolveAdaptiveDefault(modelInfo); def != "" {
+				result, _ = sjson.SetBytes(result, "output_config.effort", def)
+			} else {
+				result, _ = sjson.DeleteBytes(result, "output_config.effort")
+				if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
+					result, _ = sjson.DeleteBytes(result, "output_config")
+				}
 			}
 			return result, nil
 		}
@@ -162,6 +170,26 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 	default:
 		return body, nil
 	}
+}
+
+// resolveAdaptiveDefault returns the registry-declared default effort level for
+// an adaptive-capable model, or "" when no valid default is configured. A
+// default value that is not also listed in Levels is ignored so the upstream
+// server still receives only documented levels.
+func resolveAdaptiveDefault(modelInfo *registry.ModelInfo) string {
+	if modelInfo == nil || modelInfo.Thinking == nil {
+		return ""
+	}
+	def := strings.TrimSpace(modelInfo.Thinking.Default)
+	if def == "" {
+		return ""
+	}
+	for _, lvl := range modelInfo.Thinking.Levels {
+		if strings.EqualFold(strings.TrimSpace(lvl), def) {
+			return def
+		}
+	}
+	return ""
 }
 
 // normalizeClaudeBudget applies Claude-specific constraints to ensure max_tokens > budget_tokens.
