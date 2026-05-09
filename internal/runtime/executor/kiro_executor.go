@@ -89,14 +89,6 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	}
 	updateNestedKiroToken(auth.Metadata, result)
 
-	// For SSO auth, fetch profileArn if not already set (social refresh already
-	// returns profileArn inline, so only OIDC needs this extra hop).
-	if result.AuthMethod == "oidc" || result.AuthMethod == "sso" {
-		if _, ok := auth.Metadata["profile_arn"].(string); !ok || auth.Metadata["profile_arn"] == "" {
-			go e.fetchAndStoreProfileArn(auth, result.AccessToken)
-		}
-	}
-
 	// Fire-and-forget login telemetry
 	go kiroauth.SendLoginTelemetry(&http.Client{Timeout: 10 * time.Second}, "")
 
@@ -125,22 +117,6 @@ func updateNestedKiroToken(metadata map[string]any, result *kiroauth.KiroTokenSt
 	}
 }
 
-// fetchAndStoreProfileArn fetches profileArn in the background and stores it in auth metadata.
-func (e *KiroExecutor) fetchAndStoreProfileArn(auth *cliproxyauth.Auth, token string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	svc := kiroauth.NewKiroAuthWithProxyURL(e.cfg, auth.ProxyURL)
-	arn, err := svc.FetchProfileArn(ctx, token)
-	if err != nil {
-		log.Debugf("kiro: FetchProfileArn failed (non-fatal): %v", err)
-		return
-	}
-	if arn != "" && auth.Metadata != nil {
-		auth.Metadata["profile_arn"] = arn
-		log.Debugf("kiro: profileArn fetched: %s", arn)
-	}
-}
-
 // kiroAccessToken extracts the access token from auth metadata.
 func kiroAccessToken(auth *cliproxyauth.Auth) string {
 	if auth == nil || auth.Metadata == nil {
@@ -166,11 +142,19 @@ func kiroProfileArn(auth *cliproxyauth.Auth) string {
 	if v, ok := auth.Metadata["profile_arn"].(string); ok {
 		return v
 	}
+	if v, ok := auth.Metadata["auth_method"].(string); ok && strings.EqualFold(v, "oidc") {
+		return kiroauth.DefaultBuilderIDProfileArn
+	}
 	return ""
 }
 
 // FetchModels calls the Kiro ListAvailableModels API and returns registry-compatible ModelInfo entries.
 func (e *KiroExecutor) FetchModels(ctx context.Context, auth *cliproxyauth.Auth) ([]*registry.ModelInfo, error) {
+	var err error
+	auth, err = e.ensureFreshKiroAuth(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
 	token := kiroAccessToken(auth)
 	if token == "" {
 		return nil, fmt.Errorf("kiro: no access token for model fetch")
@@ -240,6 +224,9 @@ func metadataToKiroStorage(metadata map[string]any) *kiroauth.KiroTokenStorage {
 	}
 	if strings.EqualFold(s.AuthMethod, "sso") {
 		s.AuthMethod = "oidc"
+	}
+	if s.ProfileArn == "" && s.AuthMethod == "oidc" {
+		s.ProfileArn = kiroauth.DefaultBuilderIDProfileArn
 	}
 	if v := getString("region"); v != "" {
 		s.Region = v

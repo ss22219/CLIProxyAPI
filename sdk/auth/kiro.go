@@ -95,8 +95,10 @@ func (a KiroAuthenticator) loginWithDeviceCode(ctx context.Context, cfg *config.
 		ClientID:     result.ClientID,
 		ClientSecret: result.ClientSecret,
 		ExpiresAt:    expiresAt,
+		ProfileArn:   kiro.DefaultBuilderIDProfileArn,
 		Type:         "kiro",
 	}
+	metadata["profile_arn"] = kiro.DefaultBuilderIDProfileArn
 
 	fileName := fmt.Sprintf("kiro-sso.json")
 

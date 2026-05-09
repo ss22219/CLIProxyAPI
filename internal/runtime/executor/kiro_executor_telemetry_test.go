@@ -120,8 +120,27 @@ func TestBuildKiroRequestBody_SkipsMalformedTools(t *testing.T) {
 	payload := []byte(`{"tools":[{"description":"missing name","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hello"}]}`)
 	body, _ := buildKiroRequestBody(payload, "auto", "arn:test")
 
-	if got := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.userInputMessageContext.tools.0.toolSpecification.name").String(); got != "no_tool_available" {
-		t.Fatalf("tool name = %q, want no_tool_available; body=%s", got, string(body))
+	if gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.userInputMessageContext.tools").Exists() {
+		t.Fatalf("malformed tools should be omitted; body=%s", string(body))
+	}
+}
+
+func TestBuildKiroRequestBody_OmitsToolsWhenNoneProvided(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
+	body, _ := buildKiroRequestBody(payload, "auto", "arn:test")
+
+	if gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.userInputMessageContext.tools").Exists() {
+		t.Fatalf("tools should be omitted when none are provided; body=%s", string(body))
+	}
+}
+
+func TestKiroTelemetryStatsCarriesFirstToolUse(t *testing.T) {
+	calls := []kiroToolCall{{ID: "tooluse_1", Name: "get_weather"}, {ID: "tooluse_2", Name: "other"}}
+	if got := firstKiroToolName(calls); got != "get_weather" {
+		t.Fatalf("firstKiroToolName = %q, want get_weather", got)
+	}
+	if got := firstKiroToolUseID(calls); got != "tooluse_1" {
+		t.Fatalf("firstKiroToolUseID = %q, want tooluse_1", got)
 	}
 }
 

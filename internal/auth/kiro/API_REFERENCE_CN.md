@@ -325,6 +325,10 @@ user-agent: ...api/codewhispererruntime/...
 }
 ```
 
+> 2026-05-09 本地 SSO/OIDC 凭证实测：`profileArn` 不能通过空 body 的 GetProfile 探测。请求 `{}` 会返回
+> `ValidationException: Invalid profileArn.`；请求 `{"profileArn":""}` 会返回 ARN 正则校验错误。
+> 若本地 `state` 表没有 `api.codewhisperer.profile`，`kirocli:odic:*` 两个 auth_kv 记录本身不包含 profile ARN。
+
 ### 响应
 
 ```json
@@ -357,6 +361,27 @@ x-amz-target: AmazonCodeWhispererService.ListAvailableModels
   "profileArn": "arn:aws:codewhisperer:..."
 }
 ```
+
+> 2026-05-09 本地 SSO/OIDC 凭证 + mitmproxy 实测：使用 Kiro 2.2.2 runtime headers 时，省略
+> `profileArn`（仅带 `origin=KIRO_CLI`）会返回 `ValidationException: Invalid profileArn.`，因此模型列表不能作为
+> profile ARN 的发现入口。若去掉 Kiro CLI 的 UA / `x-amz-user-agent` 等特征 header，服务端可能返回一份通用模型目录，
+> 但这不等同于 Kiro CLI 真实调用路径。
+> 当前返回模型 ID：`auto`, `claude-opus-4.7`, `claude-opus-4.6`, `claude-sonnet-4.6`,
+> `claude-opus-4.5`, `claude-sonnet-4.5`, `claude-sonnet-4`, `claude-haiku-4.5`,
+> `deepseek-3.2`, `minimax-m2.5`, `minimax-m2.1`, `glm-5`, `qwen3-coder-next`。
+
+### BuilderId/OIDC 默认 profile ARN
+
+2026-05-09 mitmproxy 抓 `kiro-cli 2.2.2 chat --list-models`：本地 SQLite、`~/.aws`、`~/.kiro`
+均未保存 profile ARN，OIDC token/JWT payload 也不包含它；但 CLI 发出的 `ListAvailableModels`
+请求在 query 和 body 中都携带固定 BuilderId profile ARN：
+
+```text
+arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX
+```
+
+因此对 BuilderId/OIDC 导入，若 social token 或 `state.api.codewhisperer.profile` 没有提供 profile ARN，
+应使用该默认 ARN；社交登录仍以 `kirocli:social:token.profile_arn` 或 refresh 响应 `profileArn` 为准。
 
 ### 响应
 
@@ -811,6 +836,11 @@ host: client-telemetry.us-east-1.amazonaws.com
 | `codewhispererterminal_parentToolUseId` | `""` |
 
 **注意**：此通道需要 STS 临时凭证（通过 `GetCredentialsForIdentity` 获取，凭证缓存在 sqlite `state.telemetry-cognito-credentials`），无法用 Bearer Token 调用。
+
+2026-05-09 发布前复测：连续发送 Toolkit telemetry 时，若每个新进程都重新调用 Cognito
+`GetId` / `GetCredentialsForIdentity`，可能触发 `TooManyRequestsException: Rate exceeded`。kiro-cli 本地
+`state.telemetry-cognito-identity-id` 和 `state.telemetry-cognito-credentials` 可复用；调用端应优先读取未过期缓存，
+只在缺失或过期时再请求 Cognito。
 
 ---
 

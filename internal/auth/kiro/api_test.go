@@ -1,7 +1,9 @@
 package kiro
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -71,6 +73,102 @@ func TestFetchModels_HeadersWiring(t *testing.T) {
 	}
 }
 
+func TestFetchModels_RequiresProfileArn(t *testing.T) {
+	svc := NewKiroAuth(nil)
+	_, err := svc.FetchModels(context.Background(), "test-token", "")
+	if err == nil || !strings.Contains(err.Error(), "profileArn required") {
+		t.Fatalf("expected profileArn required error, got %v", err)
+	}
+}
+
+func TestProfileArnOrDefault(t *testing.T) {
+	if got := profileArnOrDefault("", "oidc"); got != DefaultBuilderIDProfileArn {
+		t.Fatalf("oidc default profileArn = %q", got)
+	}
+	if got := profileArnOrDefault(" arn:test ", "oidc"); got != "arn:test" {
+		t.Fatalf("explicit profileArn = %q", got)
+	}
+	if got := profileArnOrDefault("", "social"); got != "" {
+		t.Fatalf("social default profileArn = %q", got)
+	}
+}
+
+func TestRefreshSocialUsesSocialProfileArnOnly(t *testing.T) {
+	var capturedURL string
+	var capturedBody string
+	svc := &KiroAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		capturedURL = req.URL.String()
+		body, _ := io.ReadAll(req.Body)
+		capturedBody = string(body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"accessToken":"access-social",
+				"refreshToken":"refresh-social-new",
+				"expiresIn":3600,
+				"profileArn":"arn:aws:codewhisperer:us-east-1:111:profile/social"
+			}`)),
+			Request: req,
+		}, nil
+	})}}
+
+	result, err := svc.RefreshToken(context.Background(), &KiroTokenStorage{
+		RefreshToken: "refresh-social",
+		AuthMethod:   "social",
+		Region:       "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("RefreshToken social failed: %v", err)
+	}
+	if !strings.Contains(capturedURL, "prod.us-east-1.auth.desktop.kiro.dev/refreshToken") {
+		t.Fatalf("social refresh URL = %q", capturedURL)
+	}
+	if capturedBody != `{"refreshToken":"refresh-social"}` {
+		t.Fatalf("social refresh body = %s", capturedBody)
+	}
+	if result.ProfileArn != "arn:aws:codewhisperer:us-east-1:111:profile/social" {
+		t.Fatalf("social profileArn = %q", result.ProfileArn)
+	}
+	if result.ProfileArn == DefaultBuilderIDProfileArn {
+		t.Fatal("social refresh must not use BuilderId default profileArn")
+	}
+}
+
+func TestRefreshOIDCUsesBuilderIDDefaultWhenMissing(t *testing.T) {
+	svc := &KiroAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(req.Body)
+		if !bytes.Contains(body, []byte(`"grantType":"refresh_token"`)) {
+			t.Fatalf("OIDC refresh body missing grantType: %s", string(body))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"accessToken":"access-oidc",
+				"refreshToken":"refresh-oidc-new",
+				"expiresIn":3600,
+				"tokenType":"Bearer"
+			}`)),
+			Request: req,
+		}, nil
+	})}}
+
+	result, err := svc.RefreshToken(context.Background(), &KiroTokenStorage{
+		RefreshToken: "refresh-oidc",
+		AuthMethod:   "oidc",
+		Region:       "us-east-1",
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+	})
+	if err != nil {
+		t.Fatalf("RefreshToken oidc failed: %v", err)
+	}
+	if result.ProfileArn != DefaultBuilderIDProfileArn {
+		t.Fatalf("oidc profileArn = %q", result.ProfileArn)
+	}
+}
+
 func TestListAvailableModelsURLIncludesQueryParameters(t *testing.T) {
 	got := listAvailableModelsURL("us-east-1", "arn:aws:codewhisperer:us-east-1:123:profile/A/B")
 	parsed, err := url.Parse(got)
@@ -87,6 +185,12 @@ func TestListAvailableModelsURLIncludesQueryParameters(t *testing.T) {
 	if query.Get("profileArn") != "arn:aws:codewhisperer:us-east-1:123:profile/A/B" {
 		t.Fatalf("profileArn query = %q", query.Get("profileArn"))
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestSendQTelemetryEvent_HeadersAndTarget(t *testing.T) {

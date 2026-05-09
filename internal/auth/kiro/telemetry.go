@@ -298,6 +298,12 @@ func getOrRefreshCognito(ctx context.Context, client *http.Client) (*awsCreds, e
 	if cognitoCreds != nil && time.Now().Add(5*time.Minute).Before(cognitoExpiry) {
 		return cognitoCreds, nil
 	}
+	if cognitoCreds == nil {
+		loadCachedCognitoFromKiroState()
+		if cognitoCreds != nil && time.Now().Add(5*time.Minute).Before(cognitoExpiry) {
+			return cognitoCreds, nil
+		}
+	}
 
 	cognitoURL := fmt.Sprintf("https://cognito-identity.%s.amazonaws.com/", cognitoRegion)
 
@@ -318,6 +324,64 @@ func getOrRefreshCognito(ctx context.Context, client *http.Client) (*awsCreds, e
 	cognitoCreds = creds
 	cognitoExpiry = expiry
 	return creds, nil
+}
+
+func loadCachedCognitoFromKiroState() {
+	dbPath := kiroCliDBPath()
+	if dbPath == "" {
+		return
+	}
+	if rawID, err := queryStateExact(dbPath, "telemetry-cognito-identity-id"); err == nil && strings.TrimSpace(rawID) != "" {
+		cognitoID = parseJSONStringOrRaw(rawID)
+	}
+	rawCreds, err := queryStateExact(dbPath, "telemetry-cognito-credentials")
+	if err != nil || strings.TrimSpace(rawCreds) == "" {
+		return
+	}
+	var cached struct {
+		AccessKeyID  string `json:"access_key_id"`
+		SecretKey    string `json:"secret_key"`
+		SessionToken string `json:"session_token"`
+		Expiration   string `json:"expiration"`
+	}
+	if err = json.Unmarshal([]byte(rawCreds), &cached); err != nil {
+		return
+	}
+	expiry, err := parseCognitoExpiration(cached.Expiration)
+	if err != nil || !expiry.After(time.Now().Add(5*time.Minute)) {
+		return
+	}
+	if strings.TrimSpace(cached.AccessKeyID) == "" || strings.TrimSpace(cached.SecretKey) == "" || strings.TrimSpace(cached.SessionToken) == "" {
+		return
+	}
+	cognitoCreds = &awsCreds{
+		AccessKeyID:  cached.AccessKeyID,
+		SecretKey:    cached.SecretKey,
+		SessionToken: cached.SessionToken,
+	}
+	cognitoExpiry = expiry
+}
+
+func parseJSONStringOrRaw(raw string) string {
+	var decoded string
+	if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+		return strings.TrimSpace(decoded)
+	}
+	return strings.TrimSpace(raw)
+}
+
+func parseCognitoExpiration(raw string) (time.Time, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, fmt.Errorf("empty expiration")
+	}
+	if t, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02T15:04:05Z", trimmed); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unsupported expiration format")
 }
 
 func cognitoGetID(ctx context.Context, client *http.Client, baseURL string) (string, error) {

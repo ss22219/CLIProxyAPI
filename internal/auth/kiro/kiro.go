@@ -21,6 +21,9 @@ import (
 const (
 	// DefaultRegion is the default AWS region for Kiro.
 	DefaultRegion = "us-east-1"
+	// DefaultBuilderIDProfileArn is the profile ARN used by kiro-cli for
+	// BuilderId/OIDC users when no account-specific profile is cached locally.
+	DefaultBuilderIDProfileArn = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
 	// oidcTokenURLTemplate is the OIDC token endpoint.
 	oidcTokenURLTemplate = "https://oidc.%s.amazonaws.com/token"
 	// socialRefreshURLTemplate is the social token refresh endpoint.
@@ -213,7 +216,7 @@ func (k *KiroAuth) refreshOIDC(ctx context.Context, storage *KiroTokenStorage, r
 		Region:       region,
 		ClientID:     storage.ClientID,
 		ClientSecret: storage.ClientSecret,
-		ProfileArn:   storage.ProfileArn,
+		ProfileArn:   profileArnOrDefault(storage.ProfileArn, "oidc"),
 		Type:         "kiro",
 	}
 	if tokenResp.RefreshToken != "" {
@@ -233,4 +236,17 @@ func (e *ssoTokenError) Error() string { return e.msg }
 func isSsoTokenError(err error) bool {
 	_, ok := err.(*ssoTokenError)
 	return ok
+}
+
+func profileArnOrDefault(profileArn, authMethod string) string {
+	trimmed := strings.TrimSpace(profileArn)
+	if trimmed != "" {
+		return trimmed
+	}
+	switch strings.ToLower(strings.TrimSpace(authMethod)) {
+	case "oidc", "sso", "builderid", "builder_id":
+		return DefaultBuilderIDProfileArn
+	default:
+		return ""
+	}
 }

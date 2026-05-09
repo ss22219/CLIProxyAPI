@@ -127,6 +127,8 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		ResponseLength:    len(content),
 		TTFCMs:            ttfc,
 		TimeBetweenChunks: []float64{},
+		ToolName:          firstKiroToolName(toolCalls),
+		ToolUseID:         firstKiroToolUseID(toolCalls),
 	})
 
 	return resp, nil
@@ -306,6 +308,8 @@ type telemetryStats struct {
 	ResponseLength    int
 	TTFCMs            float64   // time-to-first-content in milliseconds
 	TimeBetweenChunks []float64 // seconds between consecutive content events
+	ToolName          string
+	ToolUseID         string
 }
 
 // telemetrySender is the function used to send telemetry. Package-level var for testability.
@@ -326,7 +330,23 @@ func defaultTelemetrySender(token, conversationID, modelID, profileArn string, s
 		ResponseLength:     stats.ResponseLength,
 		TimeToFirstChunkMs: stats.TTFCMs,
 		TimeBetweenChunks:  stats.TimeBetweenChunks,
+		ToolName:           stats.ToolName,
+		ToolUseID:          stats.ToolUseID,
 	})
+}
+
+func firstKiroToolName(toolCalls []kiroToolCall) string {
+	if len(toolCalls) == 0 {
+		return ""
+	}
+	return toolCalls[0].Name
+}
+
+func firstKiroToolUseID(toolCalls []kiroToolCall) string {
+	if len(toolCalls) == 0 {
+		return ""
+	}
+	return toolCalls[0].ID
 }
 
 // fireQTelemetry sends Q API telemetry in a fire-and-forget manner.
@@ -424,7 +444,9 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 
 	uimCtx := map[string]any{
 		"envState": envState,
-		"tools":    toolsContext,
+	}
+	if len(toolsContext) > 0 {
+		uimCtx["tools"] = toolsContext
 	}
 	if len(currentToolResults) > 0 {
 		uimCtx["toolResults"] = currentToolResults
@@ -818,15 +840,7 @@ func buildKiroToolsContext(tools gjson.Result) []map[string]any {
 	emptySchema := map[string]any{"type": "object", "properties": emptyProps}
 
 	if !tools.IsArray() || len(tools.Array()) == 0 {
-		return []map[string]any{
-			{
-				"toolSpecification": map[string]any{
-					"name":        "no_tool_available",
-					"description": "Placeholder tool when no other tools are available.",
-					"inputSchema": map[string]any{"json": emptySchema},
-				},
-			},
-		}
+		return nil
 	}
 
 	var result []map[string]any
@@ -865,15 +879,7 @@ func buildKiroToolsContext(tools gjson.Result) []map[string]any {
 		})
 	}
 	if len(result) == 0 {
-		return []map[string]any{
-			{
-				"toolSpecification": map[string]any{
-					"name":        "no_tool_available",
-					"description": "Placeholder tool when no other tools are available.",
-					"inputSchema": map[string]any{"json": emptySchema},
-				},
-			},
-		}
+		return nil
 	}
 	return result
 }
@@ -1181,6 +1187,8 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 	var cur *kiroToolCall
 	tcIndex := 0
 	totalContentLen := 0
+	var firstToolName string
+	var firstToolUseID string
 
 	// Timing collection
 	var ttfc float64
@@ -1224,6 +1232,10 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 					chunk := buildOpenAISSEToolCallChunk(chatID, model, tcIndex, cur)
 					helps.AppendAPIResponseChunk(ctx, cfg, chunk)
 					out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+					if firstToolUseID == "" {
+						firstToolName = cur.Name
+						firstToolUseID = cur.ID
+					}
 					tcIndex++
 					cur = nil
 				}
@@ -1243,6 +1255,10 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 	if cur != nil {
 		chunk := buildOpenAISSEToolCallChunk(chatID, model, tcIndex, cur)
 		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+		if firstToolUseID == "" {
+			firstToolName = cur.Name
+			firstToolUseID = cur.ID
+		}
 		tcIndex++
 	}
 
@@ -1259,6 +1275,8 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 		ResponseLength:    totalContentLen,
 		TTFCMs:            ttfc,
 		TimeBetweenChunks: timeBetweenChunks,
+		ToolName:          firstToolName,
+		ToolUseID:         firstToolUseID,
 	}
 }
 

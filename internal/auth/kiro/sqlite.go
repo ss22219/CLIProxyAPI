@@ -20,7 +20,7 @@ type KiroCliCredentials struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresAt    string
-	ProfileArn   string // populated from social:token or state.api.codewhisperer.profile
+	ProfileArn   string // populated from social:token, state.api.codewhisperer.profile, or BuilderId default
 	Provider     string // populated from social:token (e.g., "google")
 	AuthMethod   string // "oidc" or "social", inferred from which key contains the token
 }
@@ -135,6 +135,9 @@ func ReadKiroCliCredentials() (*KiroCliCredentials, error) {
 	if arn := readProfileArnFromState(dbPath); arn != "" {
 		creds.ProfileArn = arn
 	}
+	if creds.ProfileArn == "" {
+		creds.ProfileArn = profileArnOrDefault("", creds.AuthMethod)
+	}
 
 	if creds.AccessToken == "" && creds.RefreshToken == "" {
 		return nil, fmt.Errorf("kiro: kiro-cli database has no usable tokens")
@@ -179,19 +182,28 @@ func queryKVExact(dbPath, key string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+func queryStateExact(dbPath, key string) (string, error) {
+	sqlite3Path, err := findSqlite3()
+	if err != nil {
+		return "", err
+	}
+	safeKey := strings.ReplaceAll(key, "'", "''")
+	query := fmt.Sprintf("SELECT value FROM state WHERE key='%s';", safeKey)
+	cmd := exec.Command(sqlite3Path, dbPath, query)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("sqlite3 query failed: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // readProfileArnFromState reads api.codewhisperer.profile from the state table
 // and extracts the arn field.
 func readProfileArnFromState(dbPath string) string {
-	sqlite3Path, err := findSqlite3()
+	raw, err := queryStateExact(dbPath, "api.codewhisperer.profile")
 	if err != nil {
 		return ""
 	}
-	cmd := exec.Command(sqlite3Path, dbPath, "SELECT value FROM state WHERE key='api.codewhisperer.profile';")
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	raw := strings.TrimSpace(string(out))
 	if raw == "" {
 		return ""
 	}
@@ -216,6 +228,7 @@ func findSqlite3() (string, error) {
 		candidates := []string{
 			filepath.Join(os.Getenv("ProgramFiles"), "SQLite", "sqlite3.exe"),
 			filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "sqlite3", "sqlite3.exe"),
+			filepath.Join(os.Getenv("LOCALAPPDATA"), "Android", "Sdk", "platform-tools", "sqlite3.exe"),
 		}
 		for _, c := range candidates {
 			if _, statErr := os.Stat(c); statErr == nil {

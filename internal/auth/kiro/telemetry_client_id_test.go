@@ -77,11 +77,13 @@ func TestGetTelemetryClientID_UsesExistingFile(t *testing.T) {
 func overrideHomeDir(t *testing.T, tmp string) map[string]string {
 	t.Helper()
 	orig := map[string]string{
-		"HOME":        os.Getenv("HOME"),
-		"USERPROFILE": os.Getenv("USERPROFILE"),
+		"HOME":         os.Getenv("HOME"),
+		"USERPROFILE":  os.Getenv("USERPROFILE"),
+		"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"),
 	}
 	os.Setenv("HOME", tmp)
 	os.Setenv("USERPROFILE", tmp)
+	os.Setenv("LOCALAPPDATA", tmp)
 	return orig
 }
 

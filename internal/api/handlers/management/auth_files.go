@@ -2241,6 +2241,7 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 			ClientID:     registration.ClientID,
 			ClientSecret: registration.ClientSecret,
 			ExpiresAt:    expiresAt,
+			ProfileArn:   kiroAuth.DefaultBuilderIDProfileArn,
 			Type:         "kiro",
 		}
 
@@ -2252,17 +2253,12 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 			"region":        region,
 			"client_id":     registration.ClientID,
 			"client_secret": registration.ClientSecret,
+			"profile_arn":   kiroAuth.DefaultBuilderIDProfileArn,
 			"timestamp":     time.Now().UnixMilli(),
 		}
 		if expiresAt != "" {
 			metadata["expires_at"] = expiresAt
 		}
-		if profileArn, errProfile := authSvc.FetchProfileArn(ctx, tokenResp.AccessToken); errProfile != nil {
-			log.Debugf("kiro: FetchProfileArn failed after login: %v", errProfile)
-		} else if strings.TrimSpace(profileArn) != "" {
-			metadata["profile_arn"] = strings.TrimSpace(profileArn)
-		}
-
 		fileName := "kiro-sso.json"
 		record := &coreauth.Auth{
 			ID:       fileName,
