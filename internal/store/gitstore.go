@@ -18,6 +18,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
+	gogitssh "github.com/go-git/go-git/v6/plumbing/transport/ssh"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -35,6 +36,8 @@ type GitTokenStore struct {
 	branch    string
 	username  string
 	password  string
+	sshKey    string
+	sshPass   string
 	lastGC    time.Time
 }
 
@@ -53,6 +56,13 @@ func NewGitTokenStore(remote, username, password, branch string) *GitTokenStore 
 		username: username,
 		password: password,
 	}
+}
+
+// SetSSHPrivateKey configures SSH private key authentication for git remotes.
+// When set, it takes precedence over HTTP Basic authentication.
+func (s *GitTokenStore) SetSSHPrivateKey(privateKey, passphrase string) {
+	s.sshKey = strings.TrimSpace(privateKey)
+	s.sshPass = passphrase
 }
 
 // SetBaseDir updates the default directory used for auth JSON persistence when no explicit path is provided.
@@ -563,6 +573,12 @@ func (s *GitTokenStore) repoDirSnapshot() string {
 }
 
 func (s *GitTokenStore) gitAuth() transport.AuthMethod {
+	if s.sshKey != "" {
+		auth, err := gogitssh.NewPublicKeys("git", []byte(s.sshKey), s.sshPass)
+		if err == nil {
+			return auth
+		}
+	}
 	if s.username == "" && s.password == "" {
 		return nil
 	}

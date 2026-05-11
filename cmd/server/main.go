@@ -137,6 +137,8 @@ func main() {
 		gitStoreUser         string
 		gitStorePassword     string
 		gitStoreBranch       string
+		gitStoreSSHKey       string
+		gitStoreSSHPass      string
 		gitStoreLocalPath    string
 		gitStoreInst         *store.GitTokenStore
 		gitStoreRoot         string
@@ -202,6 +204,12 @@ func main() {
 	}
 	if value, ok := lookupEnv("GITSTORE_GIT_TOKEN", "gitstore_git_token"); ok {
 		gitStorePassword = value
+	}
+	if value, ok := lookupEnv("GITSTORE_SSH_PRIVATE_KEY", "gitstore_ssh_private_key"); ok {
+		gitStoreSSHKey = value
+	}
+	if value, ok := lookupEnv("GITSTORE_SSH_PASSPHRASE", "gitstore_ssh_passphrase"); ok {
+		gitStoreSSHPass = value
 	}
 	if value, ok := lookupEnv("GITSTORE_LOCAL_PATH", "gitstore_local_path"); ok {
 		gitStoreLocalPath = value
@@ -344,6 +352,7 @@ func main() {
 		gitStoreRoot = filepath.Join(gitStoreLocalPath, "gitstore")
 		authDir := filepath.Join(gitStoreRoot, "auths")
 		gitStoreInst = store.NewGitTokenStore(gitStoreRemoteURL, gitStoreUser, gitStorePassword, gitStoreBranch)
+		gitStoreInst.SetSSHPrivateKey(gitStoreSSHKey, gitStoreSSHPass)
 		gitStoreInst.SetBaseDir(authDir)
 		if errRepo := gitStoreInst.EnsureRepository(); errRepo != nil {
 			log.Errorf("failed to prepare git token store: %v", errRepo)
