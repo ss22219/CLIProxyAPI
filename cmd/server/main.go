@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -207,6 +208,14 @@ func main() {
 	}
 	if value, ok := lookupEnv("GITSTORE_SSH_PRIVATE_KEY", "gitstore_ssh_private_key"); ok {
 		gitStoreSSHKey = value
+	}
+	if value, ok := lookupEnv("GITSTORE_SSH_PRIVATE_KEY_B64", "gitstore_ssh_private_key_b64"); ok {
+		decoded, errDecode := base64.StdEncoding.DecodeString(value)
+		if errDecode != nil {
+			log.WithError(errDecode).Warn("failed to decode GITSTORE_SSH_PRIVATE_KEY_B64")
+		} else {
+			gitStoreSSHKey = string(decoded)
+		}
 	}
 	if value, ok := lookupEnv("GITSTORE_SSH_PASSPHRASE", "gitstore_ssh_passphrase"); ok {
 		gitStoreSSHPass = value
