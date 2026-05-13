@@ -15,6 +15,7 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -238,6 +239,55 @@ func TestCountKiroUsageUsesContextUsagePercentage(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAINonStreamResponseIncludesEstimatedUsage(t *testing.T) {
+	resp := buildOpenAINonStreamResponse("claude-opus-4.7", "pong", nil, usage.Detail{
+		InputTokens:  12,
+		OutputTokens: 3,
+		TotalTokens:  15,
+	})
+
+	if got := gjson.GetBytes(resp, "usage.prompt_tokens").Int(); got != 12 {
+		t.Fatalf("prompt_tokens = %d, want 12; body=%s", got, string(resp))
+	}
+	if got := gjson.GetBytes(resp, "usage.completion_tokens").Int(); got != 3 {
+		t.Fatalf("completion_tokens = %d, want 3; body=%s", got, string(resp))
+	}
+	if got := gjson.GetBytes(resp, "usage.total_tokens").Int(); got != 15 {
+		t.Fatalf("total_tokens = %d, want 15; body=%s", got, string(resp))
+	}
+}
+
+func TestStreamKiroToOpenAISSEFinalChunkIncludesEstimatedUsage(t *testing.T) {
+	reader := strings.NewReader(`{"content":"pong"}` + "\n")
+	out := make(chan cliproxyexecutor.StreamChunk, 8)
+
+	streamKiroToOpenAISSE(context.Background(), nil, reader, "claude-opus-4.7", []byte(`{"messages":[{"role":"user","content":"hello"}]}`), time.Now(), out)
+
+	var final []byte
+	for {
+		select {
+		case chunk := <-out:
+			if gjson.GetBytes(chunk.Payload, "usage").Exists() {
+				final = chunk.Payload
+			}
+		default:
+			if len(final) == 0 {
+				t.Fatal("final usage chunk missing")
+			}
+			if got := gjson.GetBytes(final, "usage.prompt_tokens").Int(); got <= 0 {
+				t.Fatalf("prompt_tokens = %d, want > 0; chunk=%s", got, string(final))
+			}
+			if got := gjson.GetBytes(final, "usage.completion_tokens").Int(); got <= 0 {
+				t.Fatalf("completion_tokens = %d, want > 0; chunk=%s", got, string(final))
+			}
+			if got := gjson.GetBytes(final, "usage.total_tokens").Int(); got <= 0 {
+				t.Fatalf("total_tokens = %d, want > 0; chunk=%s", got, string(final))
+			}
+			return
+		}
+	}
+}
+
 func TestBuildKiroRequestBody_AnthropicToolUseAndResult(t *testing.T) {
 	payload := []byte(`{
 		"messages":[
@@ -313,7 +363,7 @@ func TestBuildKiroRequestBody_AnthropicSystemArrayAndImage(t *testing.T) {
 }
 
 func TestTranslateKiroNonStreamResponseToClaudeIncludesUsage(t *testing.T) {
-	openAIResp := buildOpenAINonStreamResponse("claude-opus-4.6", "pong", nil)
+	openAIResp := buildOpenAINonStreamResponse("claude-opus-4.6", "pong", nil, usage.Detail{})
 	out := translateKiroNonStreamResponse(context.Background(), "claude-opus-4.6", openAIResp, []byte(`{"stream":false}`), cliproxyexecutor.Options{
 		SourceFormat:    sdktranslator.FormatClaude,
 		OriginalRequest: []byte(`{"stream":false}`),
@@ -364,7 +414,7 @@ func TestTranslateKiroNonStreamResponseToOpenAIResponsesIncludesUsage(t *testing
 	requestPayload := kiroSourcePayload("claude-sonnet-4.5", original, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FormatOpenAIResponse,
 	})
-	openAIResp := buildOpenAINonStreamResponse("claude-sonnet-4.5", "pong", nil)
+	openAIResp := buildOpenAINonStreamResponse("claude-sonnet-4.5", "pong", nil, usage.Detail{})
 	out := translateKiroNonStreamResponse(context.Background(), "claude-sonnet-4.5", openAIResp, requestPayload, cliproxyexecutor.Options{
 		SourceFormat:    sdktranslator.FormatOpenAIResponse,
 		OriginalRequest: original,
@@ -455,7 +505,7 @@ func TestStreamKiroToOpenAIResponsesSSEIncludesCompletedUsage(t *testing.T) {
 			if !strings.Contains(text, `"text":"pong"`) {
 				t.Fatalf("output text missing; stream=%s", text)
 			}
-			if !strings.Contains(text, `"usage":{"input_tokens":0`) {
+			if !strings.Contains(text, `"usage":{"input_tokens":`) {
 				t.Fatalf("response usage missing; stream=%s", text)
 			}
 			return
@@ -634,7 +684,7 @@ func TestStreamKiroToOpenAISSE_CollectsTimingStats(t *testing.T) {
 	out := make(chan cliproxyexecutor.StreamChunk, 100)
 
 	t0 := time.Now()
-	stats := streamKiroToOpenAISSE(context.Background(), nil, reader, "test-model", t0, out)
+	stats := streamKiroToOpenAISSE(context.Background(), nil, reader, "test-model", []byte(`{"messages":[{"role":"user","content":"hi"}]}`), t0, out)
 
 	// "Hello" + " World" + "!" = 12
 	if stats.ResponseLength != 12 {
@@ -661,7 +711,7 @@ func TestStreamKiroToOpenAISSE_SingleContent_EmptyChunks(t *testing.T) {
 	reader := strings.NewReader(`{"content":"Hi"}` + "\n")
 	out := make(chan cliproxyexecutor.StreamChunk, 100)
 
-	stats := streamKiroToOpenAISSE(context.Background(), nil, reader, "m", time.Now(), out)
+	stats := streamKiroToOpenAISSE(context.Background(), nil, reader, "m", []byte(`{"messages":[{"role":"user","content":"hi"}]}`), time.Now(), out)
 
 	if stats.ResponseLength != 2 {
 		t.Errorf("ResponseLength = %d, want 2", stats.ResponseLength)
@@ -765,7 +815,7 @@ func TestExecuteStream_FiresTelemetryWithChunkTiming(t *testing.T) {
 	out := make(chan cliproxyexecutor.StreamChunk, 100)
 
 	t0 := time.Now()
-	stats := streamKiroToOpenAISSE(context.Background(), nil, reader, "m", t0, out)
+	stats := streamKiroToOpenAISSE(context.Background(), nil, reader, "m", []byte(`{"messages":[{"role":"user","content":"hi"}]}`), t0, out)
 
 	// Fire telemetry like ExecuteStream does
 	fireQTelemetry("tok", "conv-stream", "auto", "", stats)

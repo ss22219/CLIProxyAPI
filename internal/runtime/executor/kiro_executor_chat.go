@@ -121,9 +121,10 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		log.Debugf("kiro: empty response on attempt %d, retrying", attempt+1)
 	}
 
-	openAIResp := buildOpenAINonStreamResponse(req.Model, content, toolCalls)
+	usageDetail := countKiroUsage(baseModel, requestPayload, content, contextUsagePercentage)
+	openAIResp := buildOpenAINonStreamResponse(req.Model, content, toolCalls, usageDetail)
 	outResp := translateKiroNonStreamResponse(ctx, req.Model, openAIResp, requestPayload, opts)
-	reporter.Publish(ctx, countKiroUsage(baseModel, requestPayload, content, contextUsagePercentage))
+	reporter.Publish(ctx, usageDetail)
 	resp = cliproxyexecutor.Response{Payload: outResp, Headers: respHeaders}
 
 	// Fire-and-forget Q API telemetry (non-streaming: all events parsed at once, timeBetweenChunks is empty)
@@ -381,6 +382,13 @@ func countKiroUsage(model string, requestPayload []byte, outputText string, cont
 		OutputTokens: outputTokens,
 		TotalTokens:  inputTokens + outputTokens,
 	}
+}
+
+func normalizeKiroUsageDetail(detail usage.Detail) usage.Detail {
+	if detail.TotalTokens == 0 {
+		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+	}
+	return detail
 }
 
 func estimateKiroContextTokens(model string, contextUsagePercentage float64) int64 {
@@ -1226,11 +1234,12 @@ func classifyKiroEvent(jsonStr string) (kiroEvent, bool) {
 
 // --- OpenAI response builders ---
 
-func buildOpenAINonStreamResponse(model, content string, toolCalls []kiroToolCall) []byte {
+func buildOpenAINonStreamResponse(model, content string, toolCalls []kiroToolCall, detail usage.Detail) []byte {
 	finishReason := "stop"
 	if len(toolCalls) > 0 {
 		finishReason = "tool_calls"
 	}
+	detail = normalizeKiroUsageDetail(detail)
 
 	msg := map[string]any{
 		"role":    "assistant",
@@ -1260,9 +1269,9 @@ func buildOpenAINonStreamResponse(model, content string, toolCalls []kiroToolCal
 			{"index": 0, "message": msg, "finish_reason": finishReason},
 		},
 		"usage": map[string]any{
-			"prompt_tokens":     0,
-			"completion_tokens": 0,
-			"total_tokens":      0,
+			"prompt_tokens":     detail.InputTokens,
+			"completion_tokens": detail.OutputTokens,
+			"total_tokens":      detail.TotalTokens,
 		},
 	}
 	b, _ := json.Marshal(resp)
@@ -1297,7 +1306,7 @@ func streamKiroToSourceSSE(ctx context.Context, cfg *config.Config, body io.Read
 	case sdktranslator.FormatOpenAIResponse:
 		return streamKiroToOpenAIResponsesSSE(ctx, cfg, body, model, requestPayload, opts, t0, out)
 	default:
-		return streamKiroToOpenAISSE(ctx, cfg, body, model, t0, out)
+		return streamKiroToOpenAISSE(ctx, cfg, body, model, requestPayload, t0, out)
 	}
 }
 
@@ -1305,7 +1314,7 @@ func streamKiroToClaudeSSE(ctx context.Context, cfg *config.Config, body io.Read
 	openAIChunks := make(chan cliproxyexecutor.StreamChunk)
 	statsCh := make(chan telemetryStats, 1)
 	go func() {
-		statsCh <- streamKiroToOpenAISSE(ctx, cfg, body, model, t0, openAIChunks)
+		statsCh <- streamKiroToOpenAISSE(ctx, cfg, body, model, requestPayload, t0, openAIChunks)
 		close(openAIChunks)
 	}()
 
@@ -1333,7 +1342,7 @@ func streamKiroToOpenAIResponsesSSE(ctx context.Context, cfg *config.Config, bod
 	openAIChunks := make(chan cliproxyexecutor.StreamChunk)
 	statsCh := make(chan telemetryStats, 1)
 	go func() {
-		statsCh <- streamKiroToOpenAISSE(ctx, cfg, body, model, t0, openAIChunks)
+		statsCh <- streamKiroToOpenAISSE(ctx, cfg, body, model, requestPayload, t0, openAIChunks)
 		close(openAIChunks)
 	}()
 
@@ -1367,7 +1376,7 @@ func openAIStreamData(payload []byte) []byte {
 	return out
 }
 
-func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, t0 time.Time, out chan<- cliproxyexecutor.StreamChunk) telemetryStats {
+func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Reader, model string, requestPayload []byte, t0 time.Time, out chan<- cliproxyexecutor.StreamChunk) telemetryStats {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(nil, 52_428_800)
 	var buf strings.Builder
@@ -1460,7 +1469,8 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 	if tcIndex > 0 {
 		finishReason = "tool_calls"
 	}
-	out <- cliproxyexecutor.StreamChunk{Payload: buildOpenAISSEFinalChunk(chatID, model, finishReason)}
+	usageDetail := countKiroUsage(model, requestPayload, contentText.String(), contextUsagePercentage)
+	out <- cliproxyexecutor.StreamChunk{Payload: buildOpenAISSEFinalChunk(chatID, model, finishReason, usageDetail)}
 
 	if timeBetweenChunks == nil {
 		timeBetweenChunks = []float64{}
@@ -1501,11 +1511,12 @@ func buildOpenAISSEChunk(id, model, content, finishReason string, toolCalls []ma
 	return b
 }
 
-func buildOpenAISSEFinalChunk(id, model, finishReason string) []byte {
+func buildOpenAISSEFinalChunk(id, model, finishReason string, detail usage.Detail) []byte {
 	chunk := buildOpenAISSEChunk(id, model, "", finishReason, nil)
-	chunk, _ = sjson.SetBytes(chunk, "usage.prompt_tokens", 0)
-	chunk, _ = sjson.SetBytes(chunk, "usage.completion_tokens", 0)
-	chunk, _ = sjson.SetBytes(chunk, "usage.total_tokens", 0)
+	detail = normalizeKiroUsageDetail(detail)
+	chunk, _ = sjson.SetBytes(chunk, "usage.prompt_tokens", detail.InputTokens)
+	chunk, _ = sjson.SetBytes(chunk, "usage.completion_tokens", detail.OutputTokens)
+	chunk, _ = sjson.SetBytes(chunk, "usage.total_tokens", detail.TotalTokens)
 	return chunk
 }
 
