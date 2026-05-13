@@ -74,6 +74,36 @@ func TestFetchModels_HeadersWiring(t *testing.T) {
 	}
 }
 
+func TestQHeadersMatchKiroCLI23Shape(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "https://q.us-east-1.amazonaws.com/", nil)
+	SetStreamingHeaders(req, "ksk_test")
+
+	userAgent := req.Header.Get("User-Agent")
+	if !strings.Contains(userAgent, "aws-sdk-rust/1.3.15") {
+		t.Fatalf("User-Agent = %q, want aws-sdk-rust/1.3.15", userAgent)
+	}
+	if !strings.Contains(userAgent, "md/appVersion-2.3.0") {
+		t.Fatalf("User-Agent = %q, want appVersion-2.3.0", userAgent)
+	}
+	if strings.Contains(userAgent, "exec-env/") || strings.Contains(userAgent, "Version/2.2.2") {
+		t.Fatalf("User-Agent = %q, still has legacy 2.2.2 markers", userAgent)
+	}
+
+	amzUserAgent := req.Header.Get("x-amz-user-agent")
+	if !strings.Contains(amzUserAgent, "aws-sdk-rust/1.3.15") {
+		t.Fatalf("x-amz-user-agent = %q, want aws-sdk-rust/1.3.15", amzUserAgent)
+	}
+	if !strings.Contains(amzUserAgent, " m/F app/AmazonQ-For-CLI") {
+		t.Fatalf("x-amz-user-agent = %q, want m/F suffix", amzUserAgent)
+	}
+	if strings.Contains(amzUserAgent, "exec-env/") || strings.Contains(amzUserAgent, "Version/2.2.2") {
+		t.Fatalf("x-amz-user-agent = %q, still has legacy 2.2.2 markers", amzUserAgent)
+	}
+	if got := req.Header.Get("tokenType"); got != "API_KEY" {
+		t.Fatalf("tokenType = %q, want API_KEY for Kiro API key", got)
+	}
+}
+
 func TestFetchModels_AllowsEmptyProfileArnForAPIKey(t *testing.T) {
 	svc := NewKiroAuth(nil)
 	_, err := svc.FetchModels(context.Background(), "test-token", "")

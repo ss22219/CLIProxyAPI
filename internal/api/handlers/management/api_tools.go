@@ -179,6 +179,9 @@ func (h *Handler) APICall(c *gin.Context) {
 	if hostOverride != "" {
 		req.Host = hostOverride
 	}
+	if shouldAttachKiroAPIKeyTokenType(auth, req.URL) && req.Header.Get("tokenType") == "" {
+		req.Header.Set("tokenType", "API_KEY")
+	}
 
 	httpClient := &http.Client{
 		Timeout: defaultAPICallTimeout,
@@ -273,6 +276,17 @@ func applyAPICallReplacements(value string, replacements map[string]string) stri
 		out = strings.ReplaceAll(out, url.QueryEscape(placeholder), url.QueryEscape(replacement))
 	}
 	return out
+}
+
+func shouldAttachKiroAPIKeyTokenType(auth *coreauth.Auth, targetURL *url.URL) bool {
+	if auth == nil || targetURL == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "kiro") || !isKiroAPIKeyManagementAuth(auth) {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(targetURL.Hostname()))
+	return host == "q.us-east-1.amazonaws.com" || host == "q.eu-central-1.amazonaws.com" || (strings.HasPrefix(host, "q.") && strings.HasSuffix(host, ".amazonaws.com"))
 }
 
 func firstNonEmptyString(values ...*string) string {
@@ -731,6 +745,9 @@ func tokenValueFromMetadata(metadata map[string]any) string {
 		return strings.TrimSpace(v)
 	}
 	if v, ok := metadata["access_token"].(string); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	if v, ok := metadata["api_key"].(string); ok && strings.TrimSpace(v) != "" {
 		return strings.TrimSpace(v)
 	}
 	if tokenRaw, ok := metadata["token"]; ok && tokenRaw != nil {

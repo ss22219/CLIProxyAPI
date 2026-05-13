@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -245,6 +246,43 @@ func TestKiroAPICallAPIKeyDoesNotUseProfileArnOrRefresh(t *testing.T) {
 	}
 	if profileArn != "" {
 		t.Fatalf("profileArn = %q, want empty", profileArn)
+	}
+}
+
+func TestKiroAPICallAPIKeyAddsTokenTypeForQAPI(t *testing.T) {
+	t.Parallel()
+
+	auth := &coreauth.Auth{
+		Provider:   "kiro",
+		Attributes: map[string]string{"api_key": "ksk_test"},
+		Metadata: map[string]any{
+			"type":        "kiro",
+			"auth_method": "api_key",
+			"api_key":     "ksk_test",
+		},
+	}
+	parsed, err := url.Parse("https://q.us-east-1.amazonaws.com/?origin=KIRO_CLI")
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	if !shouldAttachKiroAPIKeyTokenType(auth, parsed) {
+		t.Fatal("expected Kiro API key APICall to attach tokenType for Q API")
+	}
+
+	telemetryURL, err := url.Parse("https://client-telemetry.us-east-1.amazonaws.com/metrics")
+	if err != nil {
+		t.Fatalf("url.Parse telemetry: %v", err)
+	}
+	if shouldAttachKiroAPIKeyTokenType(auth, telemetryURL) {
+		t.Fatal("did not expect tokenType on non-Q AWS endpoints")
+	}
+}
+
+func TestTokenValueFromMetadataReadsAPIKey(t *testing.T) {
+	t.Parallel()
+
+	if got := tokenValueFromMetadata(map[string]any{"api_key": " ksk_test "}); got != "ksk_test" {
+		t.Fatalf("tokenValueFromMetadata(api_key) = %q, want ksk_test", got)
 	}
 }
 
