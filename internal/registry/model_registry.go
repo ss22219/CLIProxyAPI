@@ -1146,6 +1146,9 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		if len(model.SupportedParameters) > 0 {
 			result["supported_parameters"] = append([]string(nil), model.SupportedParameters...)
 		}
+		if thinking := thinkingSupportToMap(model.Thinking); len(thinking) > 0 {
+			result["thinking"] = thinking
+		}
 		return result
 
 	case "claude":
@@ -1198,6 +1201,43 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		}
 		return result
 
+	case "kiro":
+		result := map[string]any{
+			"id":     model.ID,
+			"object": "model",
+		}
+		if model.OwnedBy != "" {
+			result["owned_by"] = model.OwnedBy
+		}
+		if model.Type != "" {
+			result["type"] = model.Type
+		}
+		if model.Created > 0 {
+			result["created"] = model.Created
+		}
+		if model.DisplayName != "" {
+			result["display_name"] = model.DisplayName
+		}
+		if model.Version != "" {
+			result["version"] = model.Version
+		}
+		if model.Description != "" {
+			result["description"] = model.Description
+		}
+		if model.ContextLength > 0 {
+			result["context_length"] = model.ContextLength
+		}
+		if model.MaxCompletionTokens > 0 {
+			result["max_completion_tokens"] = model.MaxCompletionTokens
+		}
+		if len(model.SupportedParameters) > 0 {
+			result["supported_parameters"] = append([]string(nil), model.SupportedParameters...)
+		}
+		if thinking := thinkingSupportToMap(model.Thinking); len(thinking) > 0 {
+			result["thinking"] = thinking
+		}
+		return result
+
 	default:
 		// Generic format
 		result := map[string]any{
@@ -1215,6 +1255,32 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		}
 		return result
 	}
+}
+
+func thinkingSupportToMap(thinking *ThinkingSupport) map[string]any {
+	if thinking == nil {
+		return nil
+	}
+	result := map[string]any{}
+	if thinking.Min != 0 {
+		result["min"] = thinking.Min
+	}
+	if thinking.Max != 0 {
+		result["max"] = thinking.Max
+	}
+	if thinking.ZeroAllowed {
+		result["zero_allowed"] = true
+	}
+	if thinking.DynamicAllowed {
+		result["dynamic_allowed"] = true
+	}
+	if len(thinking.Levels) > 0 {
+		result["levels"] = append([]string(nil), thinking.Levels...)
+	}
+	if thinking.Default != "" {
+		result["default"] = thinking.Default
+	}
+	return result
 }
 
 // CleanupExpiredQuotas removes expired quota tracking entries

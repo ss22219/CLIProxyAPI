@@ -3,6 +3,7 @@ package kiro
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,26 @@ func TestFetchModels_AllowsEmptyProfileArnForAPIKey(t *testing.T) {
 	_, err := svc.FetchModels(context.Background(), "test-token", "")
 	if err == nil || strings.Contains(err.Error(), "profileArn required") {
 		t.Fatalf("FetchModels error = %v, want no profileArn validation error", err)
+	}
+}
+
+func TestListModelsResponseParsesTokenLimits(t *testing.T) {
+	var result listModelsResponse
+	err := json.Unmarshal([]byte(`{"models":[{"modelId":"claude-opus-4.7","tokenLimits":{"maxInputTokens":1000000,"maxOutputTokens":64000},"additionalModelRequestFieldsSchema":{"type":"object","properties":{"output_config":{"type":"object","properties":{"effort":{"type":"string","enum":["low","medium","high","xhigh","max"]}}}}}}]}`), &result)
+	if err != nil {
+		t.Fatalf("unmarshal listModelsResponse: %v", err)
+	}
+	if len(result.Models) != 1 {
+		t.Fatalf("models length = %d, want 1", len(result.Models))
+	}
+	if got := result.Models[0].TokenLimits.MaxInputTokens; got != 1000000 {
+		t.Fatalf("maxInputTokens = %d, want 1000000", got)
+	}
+	if got := result.Models[0].TokenLimits.MaxOutputTokens; got != 64000 {
+		t.Fatalf("maxOutputTokens = %d, want 64000", got)
+	}
+	if len(result.Models[0].AdditionalModelRequestFieldsSchema) == 0 {
+		t.Fatal("additionalModelRequestFieldsSchema should be parsed")
 	}
 }
 

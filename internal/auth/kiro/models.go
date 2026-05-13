@@ -17,9 +17,14 @@ import (
 
 // KiroModel represents a model returned by the Kiro ListAvailableModels API.
 type KiroModel struct {
-	ModelID     string `json:"modelId"`
-	ModelName   string `json:"modelName"`
-	Description string `json:"description"`
+	ModelID                            string          `json:"modelId"`
+	ModelName                          string          `json:"modelName"`
+	Description                        string          `json:"description"`
+	AdditionalModelRequestFieldsSchema json.RawMessage `json:"additionalModelRequestFieldsSchema"`
+	TokenLimits                        struct {
+		MaxInputTokens  int `json:"maxInputTokens"`
+		MaxOutputTokens int `json:"maxOutputTokens"`
+	} `json:"tokenLimits"`
 }
 
 // listModelsResponse is the response from ListAvailableModels.

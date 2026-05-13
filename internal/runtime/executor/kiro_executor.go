@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 // KiroExecutor handles Kiro (AWS Q) API requests and token refresh.
@@ -190,16 +191,62 @@ func (e *KiroExecutor) FetchModels(ctx context.Context, auth *cliproxyauth.Auth)
 			displayName = m.ModelID
 		}
 		out = append(out, &registry.ModelInfo{
-			ID:          m.ModelID,
-			Object:      "model",
-			Created:     now,
-			OwnedBy:     "amazon",
-			Type:        "kiro",
-			DisplayName: displayName,
-			Description: m.Description,
+			ID:                  m.ModelID,
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "amazon",
+			Type:                "kiro",
+			DisplayName:         displayName,
+			Description:         m.Description,
+			ContextLength:       m.TokenLimits.MaxInputTokens,
+			MaxCompletionTokens: m.TokenLimits.MaxOutputTokens,
+			SupportedParameters: kiroSupportedParameters(m),
+			Thinking:            kiroThinkingSupport(m),
 		})
 	}
 	return out, nil
+}
+
+func kiroSupportedParameters(m kiroauth.KiroModel) []string {
+	if len(kiroEffortLevels(m)) == 0 {
+		return nil
+	}
+	return []string{"thinking", "output_config", "reasoning_effort"}
+}
+
+func kiroThinkingSupport(m kiroauth.KiroModel) *registry.ThinkingSupport {
+	levels := kiroEffortLevels(m)
+	if len(levels) == 0 {
+		return nil
+	}
+	return &registry.ThinkingSupport{
+		Levels:  levels,
+		Default: defaultKiroEffort(m.ModelID),
+	}
+}
+
+func kiroEffortLevels(m kiroauth.KiroModel) []string {
+	enum := gjson.GetBytes(m.AdditionalModelRequestFieldsSchema, "properties.output_config.properties.effort.enum")
+	if enum.IsArray() {
+		levels := make([]string, 0, len(enum.Array()))
+		for _, item := range enum.Array() {
+			if value := strings.TrimSpace(item.String()); value != "" {
+				levels = append(levels, value)
+			}
+		}
+		if len(levels) > 0 {
+			return levels
+		}
+	}
+
+	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(m.ModelID)), ".", "-") {
+	case "claude-opus-4-6", "claude-opus-4-7":
+		return []string{"low", "medium", "high", "xhigh", "max"}
+	case "claude-sonnet-4-6":
+		return []string{"low", "medium", "high"}
+	default:
+		return nil
+	}
 }
 
 // metadataToKiroStorage converts auth metadata to a KiroTokenStorage.

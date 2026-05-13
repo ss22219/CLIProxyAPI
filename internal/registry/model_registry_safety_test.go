@@ -135,6 +135,52 @@ func TestGetAvailableModelsReturnsClonedSupportedParameters(t *testing.T) {
 	}
 }
 
+func TestGetAvailableModelsReturnsKiroMetadata(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("client-1", "kiro", []*ModelInfo{{
+		ID:                  "claude-opus-4.7",
+		Object:              "model",
+		OwnedBy:             "amazon",
+		Type:                "kiro",
+		DisplayName:         "Claude Opus 4.7",
+		ContextLength:       1000000,
+		MaxCompletionTokens: 64000,
+		SupportedParameters: []string{"thinking", "output_config", "reasoning_effort"},
+		Thinking: &ThinkingSupport{
+			Levels:  []string{"low", "medium", "high", "xhigh", "max"},
+			Default: "xhigh",
+		},
+	}})
+
+	models := r.GetAvailableModels("kiro")
+	if len(models) != 1 {
+		t.Fatalf("expected one model, got %d", len(models))
+	}
+	model := models[0]
+	if got := model["context_length"]; got != 1000000 {
+		t.Fatalf("context_length = %v, want 1000000", got)
+	}
+	if got := model["max_completion_tokens"]; got != 64000 {
+		t.Fatalf("max_completion_tokens = %v, want 64000", got)
+	}
+	thinking, ok := model["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking missing or wrong type: %#v", model["thinking"])
+	}
+	levels, ok := thinking["levels"].([]string)
+	if !ok || len(levels) != 5 || levels[3] != "xhigh" {
+		t.Fatalf("thinking levels = %#v", thinking["levels"])
+	}
+	levels[0] = "mutated"
+
+	again := r.GetAvailableModels("kiro")
+	againThinking := again[0]["thinking"].(map[string]any)
+	againLevels := againThinking["levels"].([]string)
+	if againLevels[0] != "low" {
+		t.Fatalf("thinking levels should be cloned, got %#v", againLevels)
+	}
+}
+
 func TestLookupModelInfoReturnsCloneForStaticDefinitions(t *testing.T) {
 	first := LookupModelInfo("claude-sonnet-4-6")
 	if first == nil || first.Thinking == nil || len(first.Thinking.Levels) == 0 {

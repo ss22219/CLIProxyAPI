@@ -11,6 +11,7 @@ import (
 	"time"
 
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -134,6 +135,66 @@ func TestBuildKiroRequestBody_OmitsToolsWhenNoneProvided(t *testing.T) {
 	}
 }
 
+func TestBuildKiroRequestBody_AddsDefaultThinkingEffortForKiroModels(t *testing.T) {
+	tests := map[string]string{
+		"claude-opus-4-6":   "xhigh",
+		"claude-opus-4-7":   "xhigh",
+		"claude-opus-4.7":   "xhigh",
+		"claude-sonnet-4-6": "high",
+	}
+	payload := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
+
+	for model, wantEffort := range tests {
+		body, _ := buildKiroRequestBody(payload, model, "arn:test")
+		prefix := "conversationState.additionalModelRequestFields"
+		if got := gjson.GetBytes(body, prefix+".thinking.type").String(); got != "adaptive" {
+			t.Fatalf("%s thinking.type = %q, want adaptive; body=%s", model, got, string(body))
+		}
+		if got := gjson.GetBytes(body, prefix+".output_config.effort").String(); got != wantEffort {
+			t.Fatalf("%s effort = %q, want %q; body=%s", model, got, wantEffort, string(body))
+		}
+	}
+}
+
+func TestBuildKiroRequestBody_KeepsExplicitThinkingEffort(t *testing.T) {
+	payload := []byte(`{
+		"messages":[{"role":"user","content":"hello"}],
+		"thinking":{"type":"adaptive"},
+		"output_config":{"effort":"low"}
+	}`)
+	body, _ := buildKiroRequestBody(payload, "claude-opus-4-7", "arn:test")
+
+	prefix := "conversationState.additionalModelRequestFields"
+	if got := gjson.GetBytes(body, prefix+".thinking.type").String(); got != "adaptive" {
+		t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, prefix+".output_config.effort").String(); got != "low" {
+		t.Fatalf("effort = %q, want low; body=%s", got, string(body))
+	}
+}
+
+func TestBuildKiroRequestBody_MapsReasoningEffort(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":"hello"}],"reasoning_effort":"medium"}`)
+	body, _ := buildKiroRequestBody(payload, "claude-opus-4-7", "arn:test")
+
+	prefix := "conversationState.additionalModelRequestFields"
+	if got := gjson.GetBytes(body, prefix+".thinking.type").String(); got != "adaptive" {
+		t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, string(body))
+	}
+	if got := gjson.GetBytes(body, prefix+".output_config.effort").String(); got != "medium" {
+		t.Fatalf("effort = %q, want medium; body=%s", got, string(body))
+	}
+}
+
+func TestBuildKiroRequestBody_SkipsThinkingEffortForOtherModels(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
+	body, _ := buildKiroRequestBody(payload, "claude-sonnet-4-5", "arn:test")
+
+	if gjson.GetBytes(body, "conversationState.additionalModelRequestFields").Exists() {
+		t.Fatalf("additionalModelRequestFields should be omitted; body=%s", string(body))
+	}
+}
+
 func TestKiroTelemetryStatsCarriesFirstToolUse(t *testing.T) {
 	calls := []kiroToolCall{{ID: "tooluse_1", Name: "get_weather"}, {ID: "tooluse_2", Name: "other"}}
 	if got := firstKiroToolName(calls); got != "get_weather" {
@@ -141,6 +202,39 @@ func TestKiroTelemetryStatsCarriesFirstToolUse(t *testing.T) {
 	}
 	if got := firstKiroToolUseID(calls); got != "tooluse_1" {
 		t.Fatalf("firstKiroToolUseID = %q, want tooluse_1", got)
+	}
+}
+
+func TestParseKiroEventStreamStatsCarriesContextUsage(t *testing.T) {
+	content, _, contextUsage := parseKiroEventStreamStats([]byte(`{"content":"hello"}
+{"contextUsagePercentage":0.226}
+{"content":" world"}`))
+
+	if content != "hello world" {
+		t.Fatalf("content = %q, want hello world", content)
+	}
+	if contextUsage != 0.226 {
+		t.Fatalf("contextUsage = %v, want 0.226", contextUsage)
+	}
+}
+
+func TestCountKiroUsageUsesContextUsagePercentage(t *testing.T) {
+	reg := registry.GetGlobalRegistry()
+	clientID := "test-kiro-context-usage"
+	reg.RegisterClient(clientID, "kiro", []*registry.ModelInfo{{
+		ID:            "claude-opus-4.7",
+		Object:        "model",
+		Type:          "kiro",
+		ContextLength: 1000000,
+	}})
+	defer reg.UnregisterClient(clientID)
+
+	detail := countKiroUsage("claude-opus-4-7", []byte(`{"messages":[{"role":"user","content":"hello"}]}`), "", 0.226)
+	if detail.InputTokens != 226000 {
+		t.Fatalf("InputTokens = %d, want 226000", detail.InputTokens)
+	}
+	if detail.TotalTokens != detail.InputTokens+detail.OutputTokens {
+		t.Fatalf("TotalTokens = %d, want input+output", detail.TotalTokens)
 	}
 }
 

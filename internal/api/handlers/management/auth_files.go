@@ -2353,6 +2353,60 @@ func (h *Handler) RequestKiroToken(c *gin.Context) {
 	})
 }
 
+// ImportKiroSQLiteCredential imports credentials from the local kiro-cli SQLite database.
+func (h *Handler) ImportKiroSQLiteCredential(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	creds, err := kiroAuth.ReadKiroCliCredentials()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read kiro-cli credentials: %v", err)})
+		return
+	}
+
+	authMethod := creds.AuthMethod
+	if authMethod == "" {
+		authMethod = "social"
+		if strings.TrimSpace(creds.ClientID) != "" {
+			authMethod = "oidc"
+		}
+	}
+
+	metadata := map[string]any{
+		"type":          "kiro",
+		"access_token":  creds.AccessToken,
+		"refresh_token": creds.RefreshToken,
+		"auth_method":   authMethod,
+		"region":        creds.Region,
+		"expires_at":    creds.ExpiresAt,
+	}
+	if creds.ProfileArn != "" {
+		metadata["profile_arn"] = creds.ProfileArn
+	}
+	if creds.ClientID != "" {
+		metadata["client_id"] = creds.ClientID
+	}
+	if creds.ClientSecret != "" {
+		metadata["client_secret"] = creds.ClientSecret
+	}
+
+	fileName := fmt.Sprintf("kiro-import-%d.json", time.Now().UnixMilli())
+	record := &coreauth.Auth{
+		ID:       fileName,
+		Provider: "kiro",
+		FileName: fileName,
+		Label:    fmt.Sprintf("Kiro (%s)", authMethod),
+		Metadata: metadata,
+	}
+
+	savedPath, errSave := h.saveTokenRecord(ctx, record)
+	if errSave != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save kiro credential"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "file": fileName, "auth_file": savedPath, "auth_method": authMethod})
+}
+
 func (h *Handler) CreateKiroAPIKeyCredential(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)

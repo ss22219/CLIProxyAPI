@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -15,10 +16,12 @@ import (
 	"github.com/google/uuid"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -71,6 +74,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	var body []byte
 	var content string
 	var toolCalls []kiroToolCall
+	var contextUsagePercentage float64
 	var respHeaders http.Header
 	var ttfc float64
 
@@ -100,7 +104,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 			return resp, err
 		}
 
-		content, toolCalls = parseKiroEventStream(body)
+		content, toolCalls, contextUsagePercentage = parseKiroEventStreamStats(body)
 		if content != "" || len(toolCalls) > 0 {
 			for i, tc := range toolCalls {
 				if tc.Args == "" || tc.Args == "{}" {
@@ -119,7 +123,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 
 	openAIResp := buildOpenAINonStreamResponse(req.Model, content, toolCalls)
 	outResp := translateKiroNonStreamResponse(ctx, req.Model, openAIResp, requestPayload, opts)
-	reporter.EnsurePublished(ctx)
+	reporter.Publish(ctx, countKiroUsage(baseModel, requestPayload, content, contextUsagePercentage))
 	resp = cliproxyexecutor.Response{Payload: outResp, Headers: respHeaders}
 
 	// Fire-and-forget Q API telemetry (non-streaming: all events parsed at once, timeBetweenChunks is empty)
@@ -195,7 +199,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	helps.AppendAPIResponseChunk(ctx, e.cfg, streamBody)
 
 	for attempt := 1; attempt < maxStreamRetries; attempt++ {
-		streamContent, streamToolCalls := parseKiroEventStream(streamBody)
+		streamContent, streamToolCalls, _ := parseKiroEventStreamStats(streamBody)
 		if streamContent != "" || len(streamToolCalls) > 0 {
 			break
 		}
@@ -225,7 +229,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	go func() {
 		defer close(out)
 		stats := streamKiroToSourceSSE(ctx, e.cfg, bytes.NewReader(streamBody), req.Model, requestPayload, opts, t0, out)
-		reporter.EnsurePublished(ctx)
+		reporter.Publish(ctx, countKiroUsage(baseModel, requestPayload, stats.ContentText, stats.ContextUsagePercentage))
 		go fireQTelemetry(token, conversationID, baseModel, profileArn, stats)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: respHeaders, Chunks: out}, nil
@@ -305,11 +309,13 @@ func shouldRefreshKiroAuth(auth *cliproxyauth.Auth, now time.Time) bool {
 
 // telemetryStats holds timing data collected during response parsing.
 type telemetryStats struct {
-	ResponseLength    int
-	TTFCMs            float64   // time-to-first-content in milliseconds
-	TimeBetweenChunks []float64 // seconds between consecutive content events
-	ToolName          string
-	ToolUseID         string
+	ResponseLength         int
+	TTFCMs                 float64   // time-to-first-content in milliseconds
+	TimeBetweenChunks      []float64 // seconds between consecutive content events
+	ToolName               string
+	ToolUseID              string
+	ContentText            string  // accumulated output text for local token counting
+	ContextUsagePercentage float64 // upstream-reported context usage ratio, 0..1
 }
 
 // telemetrySender is the function used to send telemetry. Package-level var for testability.
@@ -347,6 +353,84 @@ func firstKiroToolUseID(toolCalls []kiroToolCall) string {
 		return ""
 	}
 	return toolCalls[0].ID
+}
+
+// countKiroUsage estimates input/output token counts locally since the Kiro API
+// does not return usage data. Falls back to zero on any tokenizer error.
+func countKiroUsage(model string, requestPayload []byte, outputText string, contextUsagePercentage float64) usage.Detail {
+	enc, err := helps.TokenizerForModel(model)
+	var inputTokens int64
+	if contextUsagePercentage > 0 {
+		inputTokens = estimateKiroContextTokens(model, contextUsagePercentage)
+	}
+	if inputTokens == 0 && err == nil {
+		inputTokens, err = helps.CountOpenAIChatTokens(enc, requestPayload)
+		if err != nil {
+			inputTokens = 0
+		}
+	}
+	var outputTokens int64
+	if outputText != "" && err == nil {
+		n, errCount := enc.Count(outputText)
+		if errCount == nil {
+			outputTokens = int64(n)
+		}
+	}
+	return usage.Detail{
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		TotalTokens:  inputTokens + outputTokens,
+	}
+}
+
+func estimateKiroContextTokens(model string, contextUsagePercentage float64) int64 {
+	if contextUsagePercentage <= 0 {
+		return 0
+	}
+	if contextUsagePercentage > 1 {
+		contextUsagePercentage = 1
+	}
+	contextLength := kiroModelContextLength(model)
+	if contextLength <= 0 {
+		return 0
+	}
+	return int64(math.Round(contextUsagePercentage * float64(contextLength)))
+}
+
+func kiroModelContextLength(model string) int {
+	for _, candidate := range kiroModelLookupCandidates(model) {
+		if info := registry.GetGlobalRegistry().GetModelInfo(candidate, "kiro"); info != nil && info.ContextLength > 0 {
+			return info.ContextLength
+		}
+	}
+	return 0
+}
+
+func kiroModelLookupCandidates(model string) []string {
+	base := strings.TrimSpace(thinking.ParseSuffix(model).ModelName)
+	if base == "" {
+		return nil
+	}
+	candidates := []string{base}
+	for _, suffix := range []string{"-4-7", "-4-6"} {
+		if strings.HasSuffix(base, suffix) {
+			candidates = append(candidates, strings.TrimSuffix(base, suffix)+"-"+strings.ReplaceAll(strings.TrimPrefix(suffix, "-"), "-", "."))
+		}
+	}
+	for _, suffix := range []string{"-4.7", "-4.6"} {
+		if strings.HasSuffix(base, suffix) {
+			candidates = append(candidates, strings.TrimSuffix(base, suffix)+"-"+strings.ReplaceAll(strings.TrimPrefix(suffix, "-"), ".", "-"))
+		}
+	}
+	withDots := strings.ReplaceAll(base, "-", ".")
+	if withDots != base {
+		candidates = append(candidates, withDots)
+	}
+	withDashes := strings.ReplaceAll(base, ".", "-")
+	if withDashes != base {
+		candidates = append(candidates, withDashes)
+	}
+	return candidates
 }
 
 // fireQTelemetry sends Q API telemetry in a fire-and-forget manner.
@@ -474,6 +558,9 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 		"agentContinuationId": uuid.New().String(),
 		"agentTaskType":       "vibe",
 	}
+	if fields := kiroAdditionalModelRequestFields(payload, modelID); len(fields) > 0 {
+		conversationState["additionalModelRequestFields"] = fields
+	}
 	if len(history) > 0 {
 		conversationState["history"] = history
 	}
@@ -488,6 +575,96 @@ func buildKiroRequestBody(payload []byte, modelID, profileArn string) ([]byte, s
 		return []byte("{}"), convID
 	}
 	return b, convID
+}
+
+func kiroAdditionalModelRequestFields(payload []byte, modelID string) map[string]any {
+	if fields := jsonObjectResult(gjson.GetBytes(payload, "additionalModelRequestFields")); len(fields) > 0 {
+		return fields
+	}
+
+	fields := map[string]any{}
+	if thinking := jsonObjectResult(gjson.GetBytes(payload, "thinking")); len(thinking) > 0 {
+		fields["thinking"] = thinking
+	}
+	if outputConfig := jsonObjectResult(gjson.GetBytes(payload, "output_config")); len(outputConfig) > 0 {
+		fields["output_config"] = outputConfig
+	}
+
+	if _, ok := fields["output_config"]; !ok {
+		if effort, disabled := kiroExplicitEffort(payload); disabled {
+			if _, okThinking := fields["thinking"]; !okThinking {
+				fields["thinking"] = map[string]any{"type": "disabled"}
+			}
+			return fields
+		} else if effort != "" {
+			fields["output_config"] = map[string]any{"effort": effort}
+		}
+	}
+
+	if len(fields) == 0 {
+		if effort := defaultKiroEffort(modelID); effort != "" {
+			fields["output_config"] = map[string]any{"effort": effort}
+		}
+	}
+	if _, hasOutputConfig := fields["output_config"]; hasOutputConfig {
+		if _, hasThinking := fields["thinking"]; !hasThinking {
+			fields["thinking"] = map[string]any{"type": "adaptive"}
+		}
+	}
+	return fields
+}
+
+func jsonObjectResult(result gjson.Result) map[string]any {
+	if !result.Exists() || !result.IsObject() {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result.Raw), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func kiroExplicitEffort(payload []byte) (string, bool) {
+	for _, path := range []string{"reasoning_effort", "reasoning.effort"} {
+		value := normalizeKiroEffort(gjson.GetBytes(payload, path).String())
+		if value == "none" || value == "disabled" {
+			return "", true
+		}
+		if isKiroEffort(value) {
+			return value, false
+		}
+	}
+	return "", false
+}
+
+func defaultKiroEffort(modelID string) string {
+	model := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(modelID).ModelName))
+	model = strings.ReplaceAll(model, ".", "-")
+	switch model {
+	case "claude-opus-4-6", "claude-opus-4-7":
+		return "xhigh"
+	case "claude-sonnet-4-6":
+		return "high"
+	default:
+		return ""
+	}
+}
+
+func normalizeKiroEffort(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "-", "")
+	value = strings.ReplaceAll(value, "_", "")
+	return value
+}
+
+func isKiroEffort(value string) bool {
+	switch value {
+	case "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
 }
 
 // findLastUserMessageIdx finds the index of the last "user" or "tool" batch start.
@@ -899,22 +1076,31 @@ type kiroToolCall struct {
 }
 
 type kiroEvent struct {
-	evtType   string
-	data      string
-	name      string
-	toolUseID string
-	stop      bool
+	evtType                string
+	data                   string
+	name                   string
+	toolUseID              string
+	stop                   bool
+	contextUsagePercentage float64
 }
 
 func parseKiroEventStream(data []byte) (string, []kiroToolCall) {
+	content, toolCalls, _ := parseKiroEventStreamStats(data)
+	return content, toolCalls
+}
+
+func parseKiroEventStreamStats(data []byte) (string, []kiroToolCall, float64) {
 	var content strings.Builder
 	var toolCalls []kiroToolCall
 	var cur *kiroToolCall
+	var contextUsagePercentage float64
 
 	for _, evt := range extractKiroEvents(data) {
 		switch evt.evtType {
 		case "content":
 			content.WriteString(evt.data)
+		case "contextUsage":
+			contextUsagePercentage = evt.contextUsagePercentage
 		case "toolUse":
 			cur = &kiroToolCall{ID: evt.toolUseID, Name: evt.name}
 		case "toolUseInput":
@@ -934,7 +1120,7 @@ func parseKiroEventStream(data []byte) (string, []kiroToolCall) {
 	if cur != nil {
 		toolCalls = append(toolCalls, *cur)
 	}
-	return content.String(), toolCalls
+	return content.String(), toolCalls, contextUsagePercentage
 }
 
 func extractKiroEvents(data []byte) []kiroEvent {
@@ -961,7 +1147,7 @@ func extractKiroEvents(data []byte) []kiroEvent {
 func findKiroJSONStart(s string, from int) int {
 	prefixes := []string{
 		`{"content":`, `{"name":`, `{"followupPrompt":`,
-		`{"input":`, `{"stop":`, `{"unit":`,
+		`{"input":`, `{"stop":`, `{"unit":`, `{"contextUsagePercentage":`,
 	}
 	minPos := -1
 	for _, p := range prefixes {
@@ -1014,6 +1200,9 @@ func classifyKiroEvent(jsonStr string) (kiroEvent, bool) {
 	// Content event: has "content", no "followupPrompt"
 	if r.Get("content").Exists() && !r.Get("followupPrompt").Exists() {
 		return kiroEvent{evtType: "content", data: r.Get("content").String()}, true
+	}
+	if value := r.Get("contextUsagePercentage"); value.Exists() {
+		return kiroEvent{evtType: "contextUsage", contextUsagePercentage: value.Float()}, true
 	}
 	// Tool events: all have "name" + "toolUseId" per spec
 	if r.Get("toolUseId").Exists() {
@@ -1187,8 +1376,10 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 	var cur *kiroToolCall
 	tcIndex := 0
 	totalContentLen := 0
+	var contentText strings.Builder
 	var firstToolName string
 	var firstToolUseID string
+	var contextUsagePercentage float64
 
 	// Timing collection
 	var ttfc float64
@@ -1218,6 +1409,9 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 				helps.AppendAPIResponseChunk(ctx, cfg, chunk)
 				out <- cliproxyexecutor.StreamChunk{Payload: chunk}
 				totalContentLen += len(evt.data)
+				contentText.WriteString(evt.data)
+			case "contextUsage":
+				contextUsagePercentage = evt.contextUsagePercentage
 			case "toolUse":
 				cur = &kiroToolCall{ID: evt.toolUseID, Name: evt.name}
 			case "toolUseInput":
@@ -1272,11 +1466,13 @@ func streamKiroToOpenAISSE(ctx context.Context, cfg *config.Config, body io.Read
 		timeBetweenChunks = []float64{}
 	}
 	return telemetryStats{
-		ResponseLength:    totalContentLen,
-		TTFCMs:            ttfc,
-		TimeBetweenChunks: timeBetweenChunks,
-		ToolName:          firstToolName,
-		ToolUseID:         firstToolUseID,
+		ResponseLength:         totalContentLen,
+		TTFCMs:                 ttfc,
+		TimeBetweenChunks:      timeBetweenChunks,
+		ToolName:               firstToolName,
+		ToolUseID:              firstToolUseID,
+		ContentText:            contentText.String(),
+		ContextUsagePercentage: contextUsagePercentage,
 	}
 }
 
