@@ -239,6 +239,15 @@ func stringSliceContains(values []string, want string) bool {
 }
 
 func kiroEffortLevels(m kiroauth.KiroModel) []string {
+	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(m.ModelID)), ".", "-") {
+	case "claude-opus-4-6":
+		return []string{"low", "medium", "high", "max", "xhigh"}
+	case "claude-opus-4-7":
+		return []string{"low", "medium", "high", "xhigh", "max"}
+	case "claude-sonnet-4-6":
+		return []string{"low", "medium", "high"}
+	}
+
 	enum := gjson.GetBytes(m.AdditionalModelRequestFieldsSchema, "properties.output_config.properties.effort.enum")
 	if enum.IsArray() {
 		levels := make([]string, 0, len(enum.Array()))
@@ -251,15 +260,7 @@ func kiroEffortLevels(m kiroauth.KiroModel) []string {
 			return levels
 		}
 	}
-
-	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(m.ModelID)), ".", "-") {
-	case "claude-opus-4-6", "claude-opus-4-7":
-		return []string{"low", "medium", "high", "xhigh", "max"}
-	case "claude-sonnet-4-6":
-		return []string{"low", "medium", "high"}
-	default:
-		return nil
-	}
+	return nil
 }
 
 // metadataToKiroStorage converts auth metadata to a KiroTokenStorage.
