@@ -216,13 +216,26 @@ func kiroSupportedParameters(m kiroauth.KiroModel) []string {
 
 func kiroThinkingSupport(m kiroauth.KiroModel) *registry.ThinkingSupport {
 	levels := kiroEffortLevels(m)
+	defaultEffort := defaultKiroEffort(m.ModelID)
+	if defaultEffort != "" && !stringSliceContains(levels, defaultEffort) {
+		levels = append(levels, defaultEffort)
+	}
 	if len(levels) == 0 {
 		return nil
 	}
 	return &registry.ThinkingSupport{
 		Levels:  levels,
-		Default: defaultKiroEffort(m.ModelID),
+		Default: defaultEffort,
 	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func kiroEffortLevels(m kiroauth.KiroModel) []string {
