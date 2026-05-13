@@ -578,6 +578,20 @@ func LoadConfig(configFile string) (*Config, error) {
 	return LoadConfigOptional(configFile, false)
 }
 
+func envBool(keys ...string) bool {
+	for _, key := range keys {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value == "" {
+			continue
+		}
+		switch strings.ToLower(value) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
+}
+
 // LoadConfigOptional reads YAML from configFile.
 // If optional is true and the file is missing, it returns an empty Config.
 // If optional is true and the file is empty or invalid, it returns an empty Config.
@@ -653,6 +667,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	}
+	if envBool("MANAGEMENT_DISABLE_AUTO_UPDATE_PANEL", "REMOTE_MANAGEMENT_DISABLE_AUTO_UPDATE_PANEL") {
+		cfg.RemoteManagement.DisableAutoUpdatePanel = true
 	}
 
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
