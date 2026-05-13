@@ -1389,8 +1389,15 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 			UserDefined: true,
 		}
 		if name != "" {
-			if upstream := registry.LookupStaticModelInfo(name); upstream != nil && upstream.Thinking != nil {
-				info.Thinking = upstream.Thinking
+			if upstream := registry.LookupStaticModelInfo(name); upstream != nil {
+				info.ContextLength = upstream.ContextLength
+				info.MaxCompletionTokens = upstream.MaxCompletionTokens
+				if len(upstream.SupportedParameters) > 0 {
+					info.SupportedParameters = append([]string(nil), upstream.SupportedParameters...)
+				}
+				if upstream.Thinking != nil {
+					info.Thinking = upstream.Thinking
+				}
 			}
 		}
 		out = append(out, info)
@@ -1414,13 +1421,17 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 			continue
 		}
 		out = append(out, &ModelInfo{
-			ID:          m.ID,
-			Object:      m.Object,
-			Created:     m.Created,
-			OwnedBy:     m.OwnedBy,
-			Type:        m.Type,
-			DisplayName: m.DisplayName,
-			Description: m.Description,
+			ID:                  m.ID,
+			Object:              m.Object,
+			Created:             m.Created,
+			OwnedBy:             m.OwnedBy,
+			Type:                m.Type,
+			DisplayName:         m.DisplayName,
+			Description:         m.Description,
+			ContextLength:       m.ContextLength,
+			MaxCompletionTokens: m.MaxCompletionTokens,
+			SupportedParameters: append([]string(nil), m.SupportedParameters...),
+			Thinking:            m.Thinking,
 		})
 	}
 	return out
