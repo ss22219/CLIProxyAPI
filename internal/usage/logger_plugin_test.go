@@ -23,6 +23,17 @@ func TestRequestStatisticsRecordIncludesLatency(t *testing.T) {
 	})
 
 	snapshot := stats.Snapshot()
+	if snapshot.SuccessCount != 1 || snapshot.FailureCount != 0 {
+		t.Fatalf("snapshot counts = success %d failure %d, want 1/0", snapshot.SuccessCount, snapshot.FailureCount)
+	}
+	apiSnapshot := snapshot.APIs["test-key"]
+	if apiSnapshot.SuccessCount != 1 || apiSnapshot.FailureCount != 0 {
+		t.Fatalf("api counts = success %d failure %d, want 1/0", apiSnapshot.SuccessCount, apiSnapshot.FailureCount)
+	}
+	modelSnapshot := apiSnapshot.Models["gpt-5.4"]
+	if modelSnapshot.SuccessCount != 1 || modelSnapshot.FailureCount != 0 {
+		t.Fatalf("model counts = success %d failure %d, want 1/0", modelSnapshot.SuccessCount, modelSnapshot.FailureCount)
+	}
 	details := snapshot.APIs["test-key"].Models["gpt-5.4"].Details
 	if len(details) != 1 {
 		t.Fatalf("details len = %d, want 1", len(details))

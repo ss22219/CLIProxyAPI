@@ -329,7 +329,7 @@ func defaultTelemetrySender(token, conversationID, modelID, profileArn string, s
 		log.Debugf("kiro: Q telemetry failed (non-fatal): %v", err)
 	}
 	// Also fire the toolkit SigV4 channel (addChatMessage + recordUserTurnCompletion)
-	// to match kiro-cli 2.2.2's dual-channel telemetry behavior.
+	// to match kiro-cli's dual-channel telemetry behavior.
 	go kiroauth.SendChatTelemetry(&http.Client{Timeout: 10 * time.Second}, kiroauth.ChatMessageMetricParams{
 		ConversationID:     conversationID,
 		UtteranceID:        uuid.New().String(),

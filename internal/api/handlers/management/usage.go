@@ -28,6 +28,10 @@ func (h *Handler) GetUsageStatistics(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"usage":           snapshot,
+		"total_requests":  snapshot.TotalRequests,
+		"success_count":   snapshot.SuccessCount,
+		"failure_count":   snapshot.FailureCount,
+		"total_tokens":    snapshot.TotalTokens,
 		"failed_requests": snapshot.FailureCount,
 	})
 }

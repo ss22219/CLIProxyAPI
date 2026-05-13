@@ -24,7 +24,7 @@ const (
 	cognitoPoolID     = "us-east-1:820fd6d1-95c0-4ca4-bffb-3f01d32da842"
 	cognitoRegion     = "us-east-1"
 	telemetryProduct  = "CodeWhisperer for Terminal"
-	telemetryVersion  = "2.2.2"
+	telemetryVersion  = kiroCLIAppVersion
 )
 
 // --- Cognito credential cache (process-wide) ---
@@ -152,7 +152,7 @@ func formatChunks(chunks []float64) string {
 }
 
 // AddChatMessageMetric creates a codewhispererterminal_addChatMessage metric
-// matching the toolkit telemetry channel payload produced by kiro-cli 2.2.2.
+// matching the toolkit telemetry channel payload produced by kiro-cli.
 func AddChatMessageMetric(p ChatMessageMetricParams) MetricDatum {
 	return MetricDatum{
 		MetricName: "codewhispererterminal_addChatMessage", EpochTimestamp: nowMs(), Unit: "None", Value: 1,
@@ -182,7 +182,7 @@ func AddChatMessageMetric(p ChatMessageMetricParams) MetricDatum {
 }
 
 // RecordUserTurnCompletionMetric creates a codewhispererterminal_recordUserTurnCompletion metric
-// matching the toolkit telemetry channel payload produced by kiro-cli 2.2.2.
+// matching the toolkit telemetry channel payload produced by kiro-cli.
 func RecordUserTurnCompletionMetric(p ChatMessageMetricParams) MetricDatum {
 	return MetricDatum{
 		MetricName: "codewhispererterminal_recordUserTurnCompletion", EpochTimestamp: nowMs(), Unit: "None", Value: 1,
@@ -392,6 +392,7 @@ func cognitoGetID(ctx context.Context, client *http.Client, baseURL string) (str
 	}
 	req.Header.Set("Content-Type", "application/x-amz-json-1.1")
 	req.Header.Set("X-Amz-Target", "AWSCognitoIdentityService.GetId")
+	SetCognitoIdentityHeaders(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -419,6 +420,7 @@ func cognitoGetCreds(ctx context.Context, client *http.Client, baseURL, identity
 	}
 	req.Header.Set("Content-Type", "application/x-amz-json-1.1")
 	req.Header.Set("X-Amz-Target", "AWSCognitoIdentityService.GetCredentialsForIdentity")
+	SetCognitoIdentityHeaders(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -452,6 +454,14 @@ func cognitoGetCreds(ctx context.Context, client *http.Client, baseURL, identity
 	return c, expiry, nil
 }
 
+// SetCognitoIdentityHeaders sets headers used by kiro-cli for anonymous
+// Cognito identity calls backing toolkit telemetry.
+func SetCognitoIdentityHeaders(req *http.Request) {
+	os := KiroOSTag()
+	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-rust/%s os/%s lang/rust/1.92.0", kiroSDKVersion, os))
+	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-rust/%s ua/2.1 api/cognitoidentity/1.99.0 os/%s lang/rust/1.92.0 m/E md/http#hyper-1.x app/AmazonQ-For-CLI", kiroSDKVersion, os))
+}
+
 // --- AWS Signature V4 ---
 
 func signV4(req *http.Request, payload []byte, creds *awsCreds) {
@@ -461,8 +471,8 @@ func signV4(req *http.Request, payload []byte, creds *awsCreds) {
 	payloadHash := sha256Hex(payload)
 
 	osTag := KiroOSTag()
-	toolkitUA := fmt.Sprintf("aws-sdk-rust/1.3.14 ua/2.1 api/toolkittelemetry/1.0.0 os/%s lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/%s app/AmazonQ-For-CLI", osTag, telemetryVersion)
-	userAgent := fmt.Sprintf("aws-sdk-rust/1.3.14 os/%s lang/rust/1.92.0", osTag)
+	toolkitUA := fmt.Sprintf("aws-sdk-rust/%s ua/2.1 api/toolkittelemetry/1.0.0 os/%s lang/rust/1.92.0 app/AmazonQ-For-CLI", kiroSDKVersion, osTag)
+	userAgent := fmt.Sprintf("aws-sdk-rust/%s os/%s lang/rust/1.92.0", kiroSDKVersion, osTag)
 
 	req.Header.Set("x-amz-date", amzDate)
 	req.Header.Set("x-amz-user-agent", toolkitUA)

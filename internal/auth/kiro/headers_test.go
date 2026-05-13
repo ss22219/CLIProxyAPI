@@ -103,6 +103,32 @@ func TestUserAgentVersionStrings(t *testing.T) {
 	}
 }
 
+func TestOIDCHeaders(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "https://oidc.us-east-1.amazonaws.com/token", nil)
+	SetOIDCHeaders(req)
+
+	assertHeader(t, req, "Accept", "*/*")
+	assertHeader(t, req, "Accept-Encoding", "gzip")
+	assertHeaderContains(t, req, "User-Agent", "aws-sdk-rust/1.3.15")
+	assertHeaderContains(t, req, "x-amz-user-agent", "api/ssooidc/1.100.0")
+	assertHeaderContains(t, req, "x-amz-user-agent", "m/E,N")
+	if strings.Contains(req.Header.Get("x-amz-user-agent"), "exec-env/") {
+		t.Error("OIDC x-amz-user-agent should not contain legacy exec-env marker")
+	}
+}
+
+func TestCognitoIdentityHeaders(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "https://cognito-identity.us-east-1.amazonaws.com/", nil)
+	SetCognitoIdentityHeaders(req)
+
+	assertHeaderContains(t, req, "User-Agent", "aws-sdk-rust/1.3.15")
+	assertHeaderContains(t, req, "x-amz-user-agent", "api/cognitoidentity/1.99.0")
+	assertHeaderContains(t, req, "x-amz-user-agent", "md/http#hyper-1.x")
+	if strings.Contains(req.Header.Get("x-amz-user-agent"), "Version/2.2.2") {
+		t.Error("Cognito x-amz-user-agent should not contain legacy 2.2.2 marker")
+	}
+}
+
 func assertHeader(t *testing.T, req *http.Request, key, want string) {
 	t.Helper()
 	if got := req.Header.Get(key); got != want {

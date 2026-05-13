@@ -1,6 +1,12 @@
 # Kiro (AWS Q) API 完整参考文档
 
-> 通过 mitmproxy 抓包 kiro-cli 2.0.1 逆向获得，2026-04-22 初版；**2026-05-08 基于 2.2.2（Windows, Social/Google 登录）重新验证并增补**。
+> 通过 mitmproxy 抓包 kiro-cli 2.0.1 逆向获得，2026-04-22 初版；2026-05-08 基于 2.2.2（Windows, Social/Google 登录）重新验证并增补；**2026-05-13 基于 kiro-cli 2.3.0（Windows, OIDC/API key）复测 Q API、OIDC、Cognito、Toolkit telemetry 与模型列表**。
+>
+> 变更摘要（2026-05-13）：
+> - Q API / OIDC / Cognito / Toolkit telemetry 的 SDK UA 升为 `aws-sdk-rust/1.3.15`
+> - Q API app version 升为 `md/appVersion-2.3.0`，不再出现旧的 `exec-env/AmazonQ-For-CLI Version/2.2.2`
+> - Toolkit telemetry 的 `AWSProductVersion` / Q telemetry `ideVersion` 升为 `2.3.0`
+> - API key 模式确认必须带 `tokenType: API_KEY`；`ListAvailableModels`、`GetUsageLimits`、`GenerateAssistantResponse` 不发送 `profileArn`
 >
 > 变更摘要（2026-05-08）：
 > - 新增 §13 启动时版本检查（`desktop-release.q.*.amazonaws.com/latest/manifest.json`）
@@ -134,8 +140,8 @@ host: q.us-east-1.amazonaws.com
 
 | API 类型 | user-agent | x-amz-user-agent |
 |----------|-----------|------------------|
-| Streaming（GenerateAssistantResponse） | `aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/{os} lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 md/appVersion-2.0.1 app/AmazonQ-For-CLI` | `...api/codewhispererstreaming/... m/F app/AmazonQ-For-CLI` |
-| Runtime（其他所有） | `aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 md/appVersion-2.0.1 app/AmazonQ-For-CLI` | `...api/codewhispererruntime/... m/F app/AmazonQ-For-CLI` |
+| Streaming（GenerateAssistantResponse） | `aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.14474 os/{os} lang/rust/1.92.0 md/appVersion-2.3.0 app/AmazonQ-For-CLI` | `aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.14474 os/{os} lang/rust/1.92.0 m/F app/AmazonQ-For-CLI` |
+| Runtime（其他所有） | `aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 md/appVersion-2.3.0 app/AmazonQ-For-CLI` | `aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 m/F app/AmazonQ-For-CLI` |
 
 > `{os}` = `windows` \| `linux` \| `macos`
 >
@@ -156,8 +162,8 @@ POST https://q.us-east-1.amazonaws.com/
 content-type: application/x-amz-json-1.0
 x-amz-target: AmazonCodeWhispererStreamingService.GenerateAssistantResponse
 authorization: Bearer {accessToken}
-user-agent: aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/{os} lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 md/appVersion-2.0.1 app/AmazonQ-For-CLI
-x-amz-user-agent: aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/{os} lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 m/F app/AmazonQ-For-CLI
+user-agent: aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.14474 os/{os} lang/rust/1.92.0 md/appVersion-2.3.0 app/AmazonQ-For-CLI
+x-amz-user-agent: aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.14474 os/{os} lang/rust/1.92.0 m/F app/AmazonQ-For-CLI
 x-amzn-codewhisperer-optout: false
 amz-sdk-invocation-id: {uuid}
 amz-sdk-request: attempt=1; max=3
@@ -266,7 +272,8 @@ accept-encoding: gzip
 POST https://q.us-east-1.amazonaws.com/
 content-type: application/x-amz-json-1.0
 x-amz-target: AmazonCodeWhispererService.SendTelemetryEvent
-user-agent: aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} ...
+user-agent: aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 md/appVersion-2.3.0 app/AmazonQ-For-CLI
+x-amz-user-agent: aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 m/F app/AmazonQ-For-CLI
 ```
 
 注意 UA 中是 `codewhispererruntime`（不是 streaming）。
@@ -291,7 +298,7 @@ user-agent: aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os
     "operatingSystem": "WINDOWS",
     "product": "CodeWhisperer",
     "clientId": "{固定 uuid，跨会话不变}",
-    "ideVersion": "2.0.1"
+    "ideVersion": "2.3.0"
   },
   "profileArn": "arn:aws:codewhisperer:...",
   "modelId": "auto"
@@ -367,7 +374,7 @@ x-amz-target: AmazonCodeWhispererService.ListAvailableModels
 }
 ```
 
-> 2026-05-09 本地 SSO/OIDC 凭证 + mitmproxy 实测：使用 Kiro 2.2.2 runtime headers 时，省略
+> 2026-05-13 本地 SSO/OIDC 凭证 + mitmproxy 实测：使用 Kiro 2.3.0 runtime headers 时，省略
 > `profileArn`（仅带 `origin=KIRO_CLI`）会返回 `ValidationException: Invalid profileArn.`，因此模型列表不能作为
 > profile ARN 的发现入口。若去掉 Kiro CLI 的 UA / `x-amz-user-agent` 等特征 header，服务端可能返回一份通用模型目录，
 > 但这不等同于 Kiro CLI 真实调用路径。
@@ -377,7 +384,7 @@ x-amz-target: AmazonCodeWhispererService.ListAvailableModels
 
 ### BuilderId/OIDC 默认 profile ARN
 
-2026-05-09 mitmproxy 抓 `kiro-cli 2.2.2 chat --list-models`：本地 SQLite、`~/.aws`、`~/.kiro`
+2026-05-13 mitmproxy 抓 `kiro-cli 2.3.0 chat --list-models`：本地 SQLite、`~/.aws`、`~/.kiro`
 均未保存 profile ARN，OIDC token/JWT payload 也不包含它；但 CLI 发出的 `ListAvailableModels`
 请求在 query 和 body 中都携带固定 BuilderId profile ARN：
 
@@ -420,9 +427,9 @@ arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX
 }
 ```
 
-### 2.2.2 新增：`claude-opus-4.7` 与 `additionalModelRequestFieldsSchema`
+### 2.3.0 模型扩展：`claude-opus-4.7` 与 `additionalModelRequestFieldsSchema`
 
-> 2026-05-08 抓包 2.2.2 观察到 `auto` 模型之后新增了 `claude-opus-4.7`，并带有 `additionalModelRequestFieldsSchema`，允许请求中追加 `thinking` / `output_config` 扩展字段：
+> 2026-05-13 抓包 2.3.0 仍观察到 `auto` 模型之后包含 `claude-opus-4.7`，并带有 `additionalModelRequestFieldsSchema`，允许请求中追加 `thinking` / `output_config` 扩展字段：
 
 ```jsonc
 {
@@ -467,13 +474,17 @@ arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX
 
 ## 8. OIDC Token Refresh — SSO 令牌刷新
 
-用于 SSO 方式登录的用户刷新 token。这是 AWS SSO OIDC `CreateToken` API（2026-04-22 抓包验证）。
+用于 SSO 方式登录的用户刷新 token。这是 AWS SSO OIDC `CreateToken` API（2026-05-13 使用 2.3.0 抓包复测）。
 
 ### 请求
 
 ```http
 POST https://oidc.{region}.amazonaws.com/token
 Content-Type: application/json
+user-agent: aws-sdk-rust/1.3.15 os/{os} lang/rust/1.92.0
+x-amz-user-agent: aws-sdk-rust/1.3.15 ua/2.1 api/ssooidc/1.100.0 os/{os} lang/rust/1.92.0 m/E,N app/AmazonQ-For-CLI
+accept: */*
+accept-encoding: gzip
 ```
 
 > 这是 AWS SSO OIDC API，**不是**标准 OIDC。使用 **JSON body**（不是 form-urlencoded），字段名是 **camelCase**。
@@ -517,7 +528,7 @@ x-amzn-RequestId: {uuid}
 
 **注意**：
 - `refresh_token` 可重复使用，刷新后返回的新 refresh_token 也有效，新旧均可用
-- kiro-cli 的 OIDC refresh 请求**不走 HTTP 代理**
+- 2.3.0 实测 OIDC refresh 请求走 `HTTPS_PROXY`
 
 ---
 
@@ -714,8 +725,8 @@ Content 事件：有 content 字段，无 followupPrompt
 ```http
 POST https://client-telemetry.us-east-1.amazonaws.com/metrics
 content-type: application/json
-user-agent: aws-sdk-rust/1.3.14 os/{os} lang/rust/1.92.0
-x-amz-user-agent: aws-sdk-rust/1.3.14 ua/2.1 api/toolkittelemetry/1.0.0 os/{os} lang/rust/1.92.0 exec-env/AmazonQ-For-CLI Version/2.0.1 app/AmazonQ-For-CLI
+user-agent: aws-sdk-rust/1.3.15 os/{os} lang/rust/1.92.0
+x-amz-user-agent: aws-sdk-rust/1.3.15 ua/2.1 api/toolkittelemetry/1.0.0 os/{os} lang/rust/1.92.0 app/AmazonQ-For-CLI
 x-amz-date: 20260421T013114Z
 authorization: AWS4-HMAC-SHA256 Credential={AccessKeyId}/{date}/{region}/execute-api/aws4_request, SignedHeaders=content-length;content-type;host;x-amz-date;x-amz-security-token;x-amz-user-agent, Signature={sig}
 x-amz-security-token: {STS 临时会话令牌}
@@ -728,7 +739,8 @@ host: client-telemetry.us-east-1.amazonaws.com
 
 > 注意：
 > - `content-type` 是 `application/json`（不是 `x-amz-json-1.0`）
-> - `user-agent` 比 Q API 简短，没有 `exec-env` 和 `md/appVersion`
+> - `user-agent` 比 Q API 简短，没有 `ua/2.1`、`exec-env` 和 `md/appVersion`
+> - 2.3.0 的 `x-amz-user-agent` 也不再带旧的 `exec-env/AmazonQ-For-CLI Version/...`
 > - `amz-sdk-request` 是 `max=1`（不重试），Q API 是 `max=3`
 > - 认证使用 **AWS SigV4 签名**，需要 STS 临时凭证（通过 `GetCredentialsForIdentity` 获取）
 > - **无法用 Bearer Token 调用**
@@ -738,7 +750,7 @@ host: client-telemetry.us-east-1.amazonaws.com
 ```json
 {
   "AWSProduct": "CodeWhisperer for Terminal",
-  "AWSProductVersion": "2.0.1",
+  "AWSProductVersion": "2.3.0",
   "ClientID": "{固定 uuid}",
   "OS": "windows",
   "OSArchitecture": "x86_64",
@@ -759,9 +771,9 @@ host: client-telemetry.us-east-1.amazonaws.com
 }
 ```
 
-### Metric 类型（2.2.2 实抓）
+### Metric 类型（2.3.0 实抓）
 
-一次完整 chat（无工具调用）期间 kiro-cli 2.2.2 实测发送以下 metrics（按时间顺序）：
+一次 `kiro-cli 2.3.0 chat --list-models` 启动期间实测发送 `codewhispererterminal_cliSubcommandExecuted`；一次完整 chat（无工具调用）期间仍会发送以下 metrics（按时间顺序）：
 
 | 顺序 | MetricName | 触发时机 |
 |------|-----------|----------|
@@ -775,7 +787,7 @@ host: client-telemetry.us-east-1.amazonaws.com
 |------------|----------|
 | `codewhispererterminal_toolUseSuggested` | 模型建议使用工具 |
 
-> 原 doc 中的「KiroChatClient 不实现此通道」在 2.2.2 中**已失效**：实测 2.2.2 依然并行使用 Q API `SendTelemetryEvent`（Bearer Token）+ `client-telemetry/metrics`（SigV4）两个通道。
+> 原 doc 中的「KiroChatClient 不实现此通道」已失效：2.3.0 仍会使用 Q API `SendTelemetryEvent`（Bearer Token）+ `client-telemetry/metrics`（SigV4）两个通道。
 
 ### Metadata 字段集（实测）
 
@@ -867,7 +879,7 @@ accept-encoding: gzip
 
 ```jsonc
 {
-  "version": "2.2.2",
+  "version": "2.3.0",
   "packages": [
     {
       "kind": "deb",
@@ -876,7 +888,7 @@ accept-encoding: gzip
       "fileType": "deb",            // deb / tarXz / tarGz / tarZst / zip / appImage / dmg / exe
       "architecture": "x86_64",     // x86_64 / aarch64 / universal
       "variant": "full",            // full / headless
-      "download": "2.2.2/kiro-cli.deb",
+      "download": "2.3.0/kiro-cli.deb",
       "sha256": "d0ba204ed55cb53edb0b46bafb36107750d8362ded002d5db0505fcd51f000cd",
       "size": 390382758,
       "channel": "stable"
@@ -910,8 +922,8 @@ POST https://q.us-east-1.amazonaws.com/?profileArn={encoded_arn}&origin=KIRO_CLI
 content-type: application/x-amz-json-1.0
 x-amz-target: AmazonCodeWhispererService.GetUsageLimits
 authorization: Bearer {accessToken}
-user-agent: aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 md/appVersion-2.2.2 app/AmazonQ-For-CLI
-x-amz-user-agent: aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 m/F app/AmazonQ-For-CLI
+user-agent: aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 md/appVersion-2.3.0 app/AmazonQ-For-CLI
+x-amz-user-agent: aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 m/F app/AmazonQ-For-CLI
 x-amzn-codewhisperer-optout: false
 accept: */*
 accept-encoding: gzip
@@ -986,8 +998,8 @@ accept-encoding: gzip
 ## 15. Headless API key 模式
 
 官方 Headless 文档（`https://kiro.dev/docs/cli/headless/`）要求在无浏览器/CI 场景通过环境变量
-`KIRO_API_KEY` 提供 API key。2026-05-09 使用 Kiro CLI 2.2.2 + mitmproxy 隔离
-`USERPROFILE` / `LOCALAPPDATA` / `APPDATA` 后实测，API key 模式与 OAuth/Social 模式有明显差异。
+`KIRO_API_KEY` 提供 API key。2026-05-13 使用 Kiro CLI 2.3.0 + mitmproxy 隔离
+`USERPROFILE` / `LOCALAPPDATA` / `APPDATA` 后复测，API key 模式与 OAuth/Social 模式有明显差异。
 
 ### 认证方式
 
@@ -995,6 +1007,7 @@ API key 不会先换取 `aoa...` access token；CLI 直接把环境变量值作�
 
 ```http
 authorization: Bearer ksk_...
+tokenType: API_KEY
 ```
 
 因此本地代理实现 API key 支持时，不应走 OIDC refresh、Social refresh，也不应要求本地 SQLite token。
@@ -1009,6 +1022,7 @@ POST https://q.us-east-1.amazonaws.com/?origin=KIRO_CLI
 x-amz-target: AmazonCodeWhispererService.ListAvailableModels
 authorization: Bearer ksk_...
 content-type: application/x-amz-json-1.0
+tokenType: API_KEY
 ```
 
 ```json
@@ -1020,6 +1034,8 @@ content-type: application/x-amz-json-1.0
 实测返回 `200` 和完整模型列表。与 OAuth/Social 模式不同，API key 模式不需要默认 BuilderId
 profile ARN，也不需要 social `profile_arn`。
 
+> 2.3.0 复测：如果缺少 `tokenType: API_KEY`，同一个 `ksk_...` key 会被 Q API 当作普通 bearer token 处理，并返回 `ValidationException: Invalid profileArn` 或 `AccessDeniedException`。本地代理必须自动补该 header。
+
 ### 聊天
 
 API key 模式下 `GenerateAssistantResponse` 同样不带顶层 `profileArn`：
@@ -1029,6 +1045,7 @@ POST https://q.us-east-1.amazonaws.com/
 x-amz-target: AmazonCodeWhispererStreamingService.GenerateAssistantResponse
 authorization: Bearer ksk_...
 content-type: application/x-amz-json-1.0
+tokenType: API_KEY
 ```
 
 ```jsonc
@@ -1061,6 +1078,7 @@ API key 模式下 Q API 遥测也不带 `profileArn`：
 POST https://q.us-east-1.amazonaws.com/
 x-amz-target: AmazonCodeWhispererService.SendTelemetryEvent
 authorization: Bearer ksk_...
+tokenType: API_KEY
 ```
 
 ```jsonc
@@ -1081,7 +1099,7 @@ authorization: Bearer ksk_...
     "operatingSystem": "WINDOWS",
     "product": "CodeWhisperer",
     "clientId": "{persistent_uuid}",
-    "ideVersion": "2.2.2"
+    "ideVersion": "2.3.0"
   },
   "modelId": "auto"
 }
@@ -1103,6 +1121,29 @@ authorization: Bearer ksk_...
 
 隔离环境实测 `us-east-1` 和 `eu-central-1` 均返回 `403 AccessDeniedException`，但 CLI 继续执行；
 随后 `ListAvailableModels` 和聊天请求正常成功。实现时应把这种 profile 探测失败视为非致命。
+
+### GetUsageLimits / 额度查询
+
+2.3.0 API key 模式可以直接调用 `GetUsageLimits`，不发送 `profileArn`，query/body 与模型列表一样只保留
+`origin=KIRO_CLI`，另带 `isEmailRequired=true`：
+
+```http
+POST https://q.us-east-1.amazonaws.com/?origin=KIRO_CLI&isEmailRequired=true
+x-amz-target: AmazonCodeWhispererService.GetUsageLimits
+authorization: Bearer ksk_...
+tokenType: API_KEY
+content-type: application/x-amz-json-1.0
+```
+
+```json
+{
+  "origin": "KIRO_CLI",
+  "isEmailRequired": true
+}
+```
+
+CPA 实测返回 `subscriptionInfo.subscriptionTitle = "KIRO PRO"`、`subscriptionInfo.type = "Q_DEVELOPER_STANDALONE_PRO"` 以及
+`usageBreakdownList[]`，因此前端额度页应优先展示该接口返回的真实额度，而不是模型列表。
 
 ### Toolkit telemetry
 
@@ -1136,10 +1177,12 @@ x-amz-target: AWSCognitoIdentityService.GetCredentialsForIdentity
 | Credential 类型 | `kiro` OAuth token storage | `kiro` API key credential |
 | Authorization | `Bearer aoa...` | `Bearer ksk_...` |
 | Refresh | OIDC 或 Social refresh | 不刷新 |
+| `tokenType` header | 不发送 | `API_KEY` |
 | profileArn | 必需；social/默认 BuilderId/profile cache | 不发送 |
 | ListAvailableModels query/body | `origin` + `profileArn` | 仅 `origin` |
 | GenerateAssistantResponse body | 顶层 `profileArn` | 无顶层 `profileArn` |
 | SendTelemetryEvent body | 含 `profileArn` | 无 `profileArn` |
+| GetUsageLimits query/body | `origin` + `profileArn` + `isEmailRequired` | `origin` + `isEmailRequired`，无 `profileArn` |
 | GetProfile 失败 | 可能影响 profile 发现 | 403 非致命 |
 
 本地实现可将 API key 作为新的 Kiro auth kind 处理，运行时 executor 根据 auth kind 决定是否注入

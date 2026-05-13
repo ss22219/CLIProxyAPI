@@ -53,7 +53,7 @@ func SendQTelemetryEventTo(ctx context.Context, httpClient *http.Client, url, ac
 			"operatingSystem": osUpper,
 			"product":         "CodeWhisperer",
 			"clientId":        clientID,
-			"ideVersion":      "2.2.2",
+			"ideVersion":      kiroCLIAppVersion,
 		},
 		"modelId": modelID,
 	}

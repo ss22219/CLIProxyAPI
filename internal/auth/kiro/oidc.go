@@ -80,6 +80,7 @@ func (k *KiroAuth) oidcPost(ctx context.Context, url string, body any, result an
 		return fmt.Errorf("kiro oidc: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	SetOIDCHeaders(req)
 
 	resp, err := k.httpClient.Do(req)
 	if err != nil {
@@ -98,6 +99,15 @@ func (k *KiroAuth) oidcPost(ctx context.Context, url string, body any, result an
 		return fmt.Errorf("kiro oidc: parse response: %w", err)
 	}
 	return nil
+}
+
+// SetOIDCHeaders sets headers used by kiro-cli for SSO OIDC requests.
+func SetOIDCHeaders(req *http.Request) {
+	os := KiroOSTag()
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-rust/%s os/%s lang/rust/1.92.0", kiroSDKVersion, os))
+	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-rust/%s ua/2.1 api/ssooidc/1.100.0 os/%s lang/rust/1.92.0 m/E,N app/AmazonQ-For-CLI", kiroSDKVersion, os))
 }
 
 // RegisterClient registers an OIDC client for the device code flow.

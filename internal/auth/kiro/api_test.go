@@ -268,6 +268,15 @@ func TestSendQTelemetryEvent_HeadersAndTarget(t *testing.T) {
 		if ct != "application/x-amz-json-1.0" {
 			t.Errorf("Content-Type = %q, want application/x-amz-json-1.0", ct)
 		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		} else {
+			userContext, _ := body["userContext"].(map[string]any)
+			if got := userContext["ideVersion"]; got != "2.3.0" {
+				t.Errorf("ideVersion = %v, want 2.3.0", got)
+			}
+		}
 		w.WriteHeader(200)
 	}))
 	defer srv.Close()
