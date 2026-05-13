@@ -676,7 +676,7 @@ kiro-cli 每次进程启动时读 sqlite 中 `kirocli:social:token.expires_at`�
 | Tool input 增量 | `{"input":"参数片段","name":"fs_read","toolUseId":"tooluse_xxx"}` | **有 name 字段** |
 | Tool use 结束 | `{"name":"fs_read","stop":true,"toolUseId":"tooluse_xxx"}` | |
 | Followup 提示 | `{"followupPrompt":"..."}` | 忽略 |
-| 上下文使用率 | `{"contextUsagePercentage":0.226}` | |
+| 上下文使用率 | `{"contextUsagePercentage":0.226}` | 百分数点，`0.226` 表示 `0.226%`，不是 0~1 ratio |
 
 ### 事件解析规则
 

@@ -395,14 +395,14 @@ func estimateKiroContextTokens(model string, contextUsagePercentage float64) int
 	if contextUsagePercentage <= 0 {
 		return 0
 	}
-	if contextUsagePercentage > 1 {
-		contextUsagePercentage = 1
+	if contextUsagePercentage > 100 {
+		contextUsagePercentage = 100
 	}
 	contextLength := kiroModelContextLength(model)
 	if contextLength <= 0 {
 		return 0
 	}
-	return int64(math.Round(contextUsagePercentage * float64(contextLength)))
+	return int64(math.Round(contextUsagePercentage / 100 * float64(contextLength)))
 }
 
 func kiroModelContextLength(model string) int {
