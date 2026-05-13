@@ -2064,7 +2064,22 @@
       "display_name": "Claude Opus 4.6",
       "description": "The Claude Opus 4.6 model",
       "context_length": 1000000,
-      "max_completion_tokens": 64000
+      "max_completion_tokens": 64000,
+      "supported_parameters": [
+        "thinking",
+        "output_config",
+        "reasoning_effort"
+      ],
+      "thinking": {
+        "default": "xhigh",
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "max",
+          "xhigh"
+        ]
+      }
     },
     {
       "id": "claude-sonnet-4.6",
@@ -2075,7 +2090,20 @@
       "display_name": "Claude Sonnet 4.6",
       "description": "The latest Claude Sonnet model with 1M context window",
       "context_length": 1000000,
-      "max_completion_tokens": 64000
+      "max_completion_tokens": 64000,
+      "supported_parameters": [
+        "thinking",
+        "output_config",
+        "reasoning_effort"
+      ],
+      "thinking": {
+        "default": "high",
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
     },
     {
       "id": "claude-opus-4.5",
