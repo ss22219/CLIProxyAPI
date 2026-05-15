@@ -233,6 +233,9 @@ func TestSelectorPick_AllCooldownReturnsModelCooldownError(t *testing.T) {
 		if mce.StatusCode() != http.StatusTooManyRequests {
 			t.Fatalf("StatusCode() = %d, want %d", mce.StatusCode(), http.StatusTooManyRequests)
 		}
+		if retryAfter := mce.RetryAfter(); retryAfter == nil || *retryAfter <= 0 {
+			t.Fatalf("RetryAfter() = %v, want positive duration", retryAfter)
+		}
 
 		headers := mce.Headers()
 		if got := headers.Get("Retry-After"); got == "" {

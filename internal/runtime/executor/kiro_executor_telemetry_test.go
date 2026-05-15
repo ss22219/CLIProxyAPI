@@ -231,8 +231,8 @@ func TestCountKiroUsageUsesContextUsagePercentage(t *testing.T) {
 	defer reg.UnregisterClient(clientID)
 
 	detail := countKiroUsage("claude-opus-4-7", []byte(`{"messages":[{"role":"user","content":"hello"}]}`), "", 0.226)
-	if detail.InputTokens != 2260 {
-		t.Fatalf("InputTokens = %d, want 2260", detail.InputTokens)
+	if detail.InputTokens != 226000 {
+		t.Fatalf("InputTokens = %d, want 226000", detail.InputTokens)
 	}
 	if detail.TotalTokens != detail.InputTokens+detail.OutputTokens {
 		t.Fatalf("TotalTokens = %d, want input+output", detail.TotalTokens)

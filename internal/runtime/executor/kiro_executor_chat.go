@@ -48,7 +48,9 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		err = statusErr{code: http.StatusUnauthorized, msg: "kiro: missing access token"}
 		return
 	}
-	if err = e.preflightKiroAPIKeyQuota(ctx, auth, token); err != nil {
+	creditBefore, errPreflight := e.preflightKiroAPIKeyQuota(ctx, auth, token)
+	if errPreflight != nil {
+		err = errPreflight
 		return resp, err
 	}
 
@@ -125,6 +127,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	}
 
 	usageDetail := countKiroUsage(baseModel, requestPayload, content, contextUsagePercentage)
+	e.logKiroCreditUsage(ctx, auth, token, profileArn, baseModel, requestPayload, usageDetail, creditBefore)
 	openAIResp := buildOpenAINonStreamResponse(req.Model, content, toolCalls, usageDetail)
 	outResp := translateKiroNonStreamResponse(ctx, req.Model, openAIResp, requestPayload, opts)
 	reporter.Publish(ctx, usageDetail)
@@ -157,7 +160,9 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		err = statusErr{code: http.StatusUnauthorized, msg: "kiro: missing access token"}
 		return nil, err
 	}
-	if err = e.preflightKiroAPIKeyQuota(ctx, auth, token); err != nil {
+	creditBefore, errPreflight := e.preflightKiroAPIKeyQuota(ctx, auth, token)
+	if errPreflight != nil {
+		err = errPreflight
 		return nil, err
 	}
 
@@ -236,7 +241,9 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	go func() {
 		defer close(out)
 		stats := streamKiroToSourceSSE(ctx, e.cfg, bytes.NewReader(streamBody), req.Model, requestPayload, opts, t0, out)
-		reporter.Publish(ctx, countKiroUsage(baseModel, requestPayload, stats.ContentText, stats.ContextUsagePercentage))
+		usageDetail := countKiroUsage(baseModel, requestPayload, stats.ContentText, stats.ContextUsagePercentage)
+		e.logKiroCreditUsage(ctx, auth, token, profileArn, baseModel, requestPayload, usageDetail, creditBefore)
+		reporter.Publish(ctx, usageDetail)
 		go fireQTelemetry(token, conversationID, baseModel, profileArn, stats)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: respHeaders, Chunks: out}, nil
@@ -401,14 +408,18 @@ func estimateKiroContextTokens(model string, contextUsagePercentage float64) int
 	if contextUsagePercentage <= 0 {
 		return 0
 	}
-	if contextUsagePercentage > 100 {
-		contextUsagePercentage = 100
+	ratio := contextUsagePercentage
+	if ratio > 1 {
+		ratio = ratio / 100
+	}
+	if ratio > 1 {
+		ratio = 1
 	}
 	contextLength := kiroModelContextLength(model)
 	if contextLength <= 0 {
 		return 0
 	}
-	return int64(math.Round(contextUsagePercentage / 100 * float64(contextLength)))
+	return int64(math.Round(ratio * float64(contextLength)))
 }
 
 func kiroModelContextLength(model string) int {

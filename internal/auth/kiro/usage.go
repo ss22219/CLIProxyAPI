@@ -47,6 +47,19 @@ type UsageBreakdown struct {
 	NextDateReset                int64   `json:"nextDateReset"`
 }
 
+// CreditUsageSummary is a normalized view of the CREDIT quota bucket.
+type CreditUsageSummary struct {
+	Current        float64
+	Limit          float64
+	OverageCap     float64
+	EffectiveLimit float64
+	NextReset      time.Time
+	Plan           string
+	Subscription   string
+	OverageStatus  string
+	Currency       string
+}
+
 // FetchUsageLimits calls the Kiro GetUsageLimits API.
 func (k *KiroAuth) FetchUsageLimits(ctx context.Context, accessToken, profileArn string) (*UsageLimitsResponse, error) {
 	if strings.TrimSpace(accessToken) == "" {
@@ -110,36 +123,62 @@ func (r *UsageLimitsResponse) CreditExhausted(now time.Time) (bool, time.Time, s
 	if r == nil {
 		return false, time.Time{}, ""
 	}
+	summary, ok := r.CreditUsage(now)
+	if !ok || summary.Limit <= 0 {
+		return false, time.Time{}, ""
+	}
+	if summary.Current < summary.EffectiveLimit {
+		return false, time.Time{}, ""
+	}
+	resetAt := summary.NextReset
+	if resetAt.IsZero() || !resetAt.After(now) {
+		resetAt = now.Add(30 * time.Minute)
+	}
+	msg := fmt.Sprintf("kiro API key credit quota exceeded: %.2f/%.2f credits used; resets at %s", summary.Current, summary.EffectiveLimit, resetAt.UTC().Format(time.RFC3339))
+	return true, resetAt, msg
+}
+
+// CreditUsage returns the normalized CREDIT resource usage, when present.
+func (r *UsageLimitsResponse) CreditUsage(now time.Time) (CreditUsageSummary, bool) {
+	if r == nil {
+		return CreditUsageSummary{}, false
+	}
 	for _, item := range r.UsageBreakdownList {
 		if !strings.EqualFold(strings.TrimSpace(item.ResourceType), "CREDIT") {
 			continue
 		}
 		current := firstPositiveFloat(item.CurrentUsageWithPrecision, float64(item.CurrentUsage))
 		limit := firstPositiveFloat(item.UsageLimitWithPrecision, float64(item.UsageLimit))
-		if limit <= 0 {
-			return false, time.Time{}, ""
-		}
-		capValue := limit
-		overageEnabled := strings.EqualFold(strings.TrimSpace(r.OverageConfiguration.OverageStatus), "ENABLED")
 		overageCap := firstPositiveFloat(item.OverageCapWithPrecision, float64(item.OverageCap))
-		if overageEnabled && overageCap > 0 {
-			capValue += overageCap
-		}
-		if current < capValue {
-			return false, time.Time{}, ""
+		effectiveLimit := limit
+		overageStatus := strings.TrimSpace(r.OverageConfiguration.OverageStatus)
+		if strings.EqualFold(overageStatus, "ENABLED") && overageCap > 0 {
+			effectiveLimit += overageCap
 		}
 		resetUnix := item.NextDateReset
 		if resetUnix <= 0 {
 			resetUnix = r.NextDateReset
 		}
-		resetAt := time.Unix(resetUnix, 0)
-		if resetUnix <= 0 || !resetAt.After(now) {
+		resetAt := time.Time{}
+		if resetUnix > 0 {
+			resetAt = time.Unix(resetUnix, 0)
+		}
+		if resetAt.IsZero() || !resetAt.After(now) {
 			resetAt = now.Add(30 * time.Minute)
 		}
-		msg := fmt.Sprintf("kiro API key credit quota exceeded: %.2f/%.2f credits used; resets at %s", current, capValue, resetAt.UTC().Format(time.RFC3339))
-		return true, resetAt, msg
+		return CreditUsageSummary{
+			Current:        current,
+			Limit:          limit,
+			OverageCap:     overageCap,
+			EffectiveLimit: effectiveLimit,
+			NextReset:      resetAt,
+			Plan:           strings.TrimSpace(r.SubscriptionInfo.Type),
+			Subscription:   strings.TrimSpace(r.SubscriptionInfo.SubscriptionTitle),
+			OverageStatus:  overageStatus,
+			Currency:       strings.TrimSpace(item.Currency),
+		}, true
 	}
-	return false, time.Time{}, ""
+	return CreditUsageSummary{}, false
 }
 
 func firstPositiveFloat(values ...float64) float64 {

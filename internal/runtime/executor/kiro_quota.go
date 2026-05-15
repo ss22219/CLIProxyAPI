@@ -27,13 +27,14 @@ type kiroQuotaCacheEntry struct {
 	Exceeded   bool
 	RetryAfter time.Duration
 	Message    string
+	Credit     *kiroauth.CreditUsageSummary
 }
 
 var kiroAPIKeyQuotaCache sync.Map
 
-func (e *KiroExecutor) preflightKiroAPIKeyQuota(ctx context.Context, auth *cliproxyauth.Auth, token string) error {
+func (e *KiroExecutor) preflightKiroAPIKeyQuota(ctx context.Context, auth *cliproxyauth.Auth, token string) (*kiroauth.CreditUsageSummary, error) {
 	if !isKiroAPIKeyAuth(auth) || strings.TrimSpace(token) == "" {
-		return nil
+		return nil, nil
 	}
 	now := time.Now()
 	cacheKey := kiroAPIKeyQuotaCacheKey(auth, token)
@@ -47,9 +48,9 @@ func (e *KiroExecutor) preflightKiroAPIKeyQuota(ctx context.Context, auth *clipr
 				if retryAfter < kiroMinimumQuotaRetryAfter {
 					retryAfter = kiroDefaultQuotaRetryAfter
 				}
-				return statusErr{code: http.StatusTooManyRequests, msg: entry.Message, retryAfter: &retryAfter}
+				return entry.Credit, statusErr{code: http.StatusTooManyRequests, msg: entry.Message, retryAfter: &retryAfter}
 			}
-			return nil
+			return entry.Credit, nil
 		}
 		kiroAPIKeyQuotaCache.Delete(cacheKey)
 	}
@@ -59,12 +60,17 @@ func (e *KiroExecutor) preflightKiroAPIKeyQuota(ctx context.Context, auth *clipr
 	if err != nil {
 		log.Debugf("kiro: API key usage preflight skipped: %v", err)
 		kiroAPIKeyQuotaCache.Store(cacheKey, kiroQuotaCacheEntry{ExpiresAt: now.Add(kiroAPIKeyUsageOKTTL)})
-		return nil
+		return nil, nil
+	}
+	credit, hasCredit := limits.CreditUsage(now)
+	var creditPtr *kiroauth.CreditUsageSummary
+	if hasCredit {
+		creditPtr = &credit
 	}
 	exceeded, resetAt, message := limits.CreditExhausted(now)
 	if !exceeded {
-		kiroAPIKeyQuotaCache.Store(cacheKey, kiroQuotaCacheEntry{ExpiresAt: now.Add(kiroAPIKeyUsageOKTTL)})
-		return nil
+		kiroAPIKeyQuotaCache.Store(cacheKey, kiroQuotaCacheEntry{ExpiresAt: now.Add(kiroAPIKeyUsageOKTTL), Credit: creditPtr})
+		return creditPtr, nil
 	}
 	retryAfter := resetAt.Sub(now)
 	if retryAfter < kiroMinimumQuotaRetryAfter {
@@ -79,8 +85,9 @@ func (e *KiroExecutor) preflightKiroAPIKeyQuota(ctx context.Context, auth *clipr
 		Exceeded:   true,
 		RetryAfter: retryAfter,
 		Message:    message,
+		Credit:     creditPtr,
 	})
-	return statusErr{code: http.StatusTooManyRequests, msg: message, retryAfter: &retryAfter}
+	return creditPtr, statusErr{code: http.StatusTooManyRequests, msg: message, retryAfter: &retryAfter}
 }
 
 func kiroAPIKeyQuotaCacheKey(auth *cliproxyauth.Auth, token string) string {

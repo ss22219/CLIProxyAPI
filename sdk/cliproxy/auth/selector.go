@@ -102,6 +102,17 @@ func (e *modelCooldownError) StatusCode() int {
 	return http.StatusTooManyRequests
 }
 
+func (e *modelCooldownError) RetryAfter() *time.Duration {
+	if e == nil {
+		return nil
+	}
+	retryAfter := e.resetIn
+	if retryAfter < 0 {
+		retryAfter = 0
+	}
+	return &retryAfter
+}
+
 func (e *modelCooldownError) Headers() http.Header {
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
