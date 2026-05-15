@@ -60,6 +60,13 @@ func SetRuntimeHeaders(req *http.Request, token, target string) {
 	SetCommonQHeaders(req, token, target, "codewhispererruntime", "m/F")
 }
 
+// SetUsageLimitsHeaders sets headers for GetUsageLimits.
+func SetUsageLimitsHeaders(req *http.Request, token string) {
+	SetCommonQHeaders(req, token,
+		"AmazonCodeWhispererService.GetUsageLimits",
+		"codewhispererruntime", "m/F")
+}
+
 // SetModelsHeaders sets headers for ListAvailableModels (x-amz-user-agent ends with m/F,C).
 func SetModelsHeaders(req *http.Request, token string) {
 	SetCommonQHeaders(req, token,

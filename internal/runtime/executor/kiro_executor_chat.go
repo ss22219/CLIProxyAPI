@@ -48,6 +48,9 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		err = statusErr{code: http.StatusUnauthorized, msg: "kiro: missing access token"}
 		return
 	}
+	if err = e.preflightKiroAPIKeyQuota(ctx, auth, token); err != nil {
+		return resp, err
+	}
 
 	profileArn := kiroProfileArn(auth)
 	requestPayload := kiroSourcePayload(baseModel, req.Payload, opts)
@@ -100,7 +103,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		respHeaders = httpResp.Header.Clone()
 
 		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-			err = statusErr{code: httpResp.StatusCode, msg: string(body)}
+			err = normalizeKiroStatusError(httpResp.StatusCode, body)
 			return resp, err
 		}
 
@@ -154,6 +157,9 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		err = statusErr{code: http.StatusUnauthorized, msg: "kiro: missing access token"}
 		return nil, err
 	}
+	if err = e.preflightKiroAPIKeyQuota(ctx, auth, token); err != nil {
+		return nil, err
+	}
 
 	profileArn := kiroProfileArn(auth)
 	requestPayload := kiroSourcePayload(baseModel, req.Payload, opts)
@@ -188,7 +194,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		_ = httpResp.Body.Close()
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = normalizeKiroStatusError(httpResp.StatusCode, b)
 		return nil, err
 	}
 

@@ -890,3 +890,23 @@ func TestKiroAccessTokenUsesAPIKeyAttributes(t *testing.T) {
 		t.Fatalf("kiroProfileArn = %q, want empty for API key auth", got)
 	}
 }
+
+func TestNormalizeKiroStatusErrorCapacityIsServiceUnavailable(t *testing.T) {
+	err := normalizeKiroStatusError(http.StatusTooManyRequests, []byte(`{"__type":"com.amazon.kiro.runtimeservice#ThrottlingException","message":"I am experiencing high traffic, please try again shortly.","reason":"INSUFFICIENT_MODEL_CAPACITY"}`))
+	if got := err.StatusCode(); got != http.StatusServiceUnavailable {
+		t.Fatalf("StatusCode() = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+	if err.RetryAfter() == nil || *err.RetryAfter() <= 0 {
+		t.Fatal("expected positive RetryAfter")
+	}
+}
+
+func TestNormalizeKiroStatusErrorCreditQuotaIsTooManyRequests(t *testing.T) {
+	err := normalizeKiroStatusError(http.StatusForbidden, []byte(`{"message":"credit usage limit exceeded"}`))
+	if got := err.StatusCode(); got != http.StatusTooManyRequests {
+		t.Fatalf("StatusCode() = %d, want %d", got, http.StatusTooManyRequests)
+	}
+	if err.RetryAfter() == nil || *err.RetryAfter() <= 0 {
+		t.Fatal("expected positive RetryAfter")
+	}
+}

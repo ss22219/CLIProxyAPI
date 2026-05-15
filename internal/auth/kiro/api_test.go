@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFetchProfileArn_URLAndHeaders(t *testing.T) {
@@ -129,6 +130,52 @@ func TestListModelsResponseParsesTokenLimits(t *testing.T) {
 	}
 	if len(result.Models[0].AdditionalModelRequestFieldsSchema) == 0 {
 		t.Fatal("additionalModelRequestFieldsSchema should be parsed")
+	}
+}
+
+func TestUsageLimitsCreditExhaustedIncludesOverageCap(t *testing.T) {
+	var result UsageLimitsResponse
+	err := json.Unmarshal([]byte(`{
+		"nextDateReset": 1780272000,
+		"overageConfiguration": {"overageStatus": "ENABLED"},
+		"usageBreakdownList": [{
+			"resourceType": "CREDIT",
+			"currentUsageWithPrecision": 11005.46,
+			"usageLimitWithPrecision": 1000.0,
+			"overageCapWithPrecision": 10000.0,
+			"nextDateReset": 1780272000
+		}]
+	}`), &result)
+	if err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	exhausted, resetAt, msg := result.CreditExhausted(time.Unix(1778810000, 0))
+	if !exhausted {
+		t.Fatal("CreditExhausted = false, want true")
+	}
+	if resetAt.Unix() != 1780272000 {
+		t.Fatalf("resetAt = %d, want 1780272000", resetAt.Unix())
+	}
+	if !strings.Contains(msg, "11005.46/11000.00") {
+		t.Fatalf("message = %q, want usage/cap", msg)
+	}
+}
+
+func TestUsageLimitsCreditNotExhaustedBelowOverageCap(t *testing.T) {
+	result := &UsageLimitsResponse{
+		UsageBreakdownList: []UsageBreakdown{{
+			ResourceType:              "CREDIT",
+			CurrentUsageWithPrecision: 10999.99,
+			UsageLimitWithPrecision:   1000,
+			OverageCapWithPrecision:   10000,
+		}},
+	}
+	result.OverageConfiguration.OverageStatus = "ENABLED"
+
+	exhausted, _, _ := result.CreditExhausted(time.Now())
+	if exhausted {
+		t.Fatal("CreditExhausted = true, want false")
 	}
 }
 
