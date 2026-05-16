@@ -912,13 +912,14 @@ CLI 比对 `version` 和本地版本，若不同则在下次运行时提示升�
 
 ## 14. GetUsageLimits
 
-Kiro Pro / social profile 可通过此接口查询真实 Credit 额度。该接口由 `kiro-cli profile` 触发；`chat --list-models`
-不会调用额度接口。
+Kiro Pro / social profile 可通过此接口查询真实 Credit 额度。API key / headless 模式也可直接调用同一
+Q API 查询额度，但 `kiro-cli profile` 命令本身会先走 `GetProfile`，因此 CLI profile 命令在 API key
+模式下可能失败；代理实现应直接调用 `GetUsageLimits`。
 
 ### 请求
 
 ```http
-POST https://q.us-east-1.amazonaws.com/?profileArn={encoded_arn}&origin=KIRO_CLI&isEmailRequired=true
+POST https://q.us-east-1.amazonaws.com/?origin=KIRO_CLI&isEmailRequired=true[&profileArn={encoded_arn}]
 content-type: application/x-amz-json-1.0
 x-amz-target: AmazonCodeWhispererService.GetUsageLimits
 authorization: Bearer {accessToken}
@@ -931,11 +932,13 @@ accept-encoding: gzip
 
 ```json
 {
-  "profileArn": "arn:aws:codewhisperer:us-east-1:XXXX:profile/XXXX",
   "origin": "KIRO_CLI",
-  "isEmailRequired": true
+  "isEmailRequired": true,
+  "profileArn": "arn:aws:codewhisperer:us-east-1:XXXX:profile/XXXX"
 }
 ```
+
+API key / headless 模式不发送 `profileArn`，并带 `tokenType: API_KEY` header。
 
 ### 响应
 
@@ -980,12 +983,15 @@ accept-encoding: gzip
 }
 ```
 
+`nextDateReset` 通常是 Unix 秒级时间戳；实测上游也可能返回科学计数法 JSON number，例如
+`1.780272E9`，客户端解析时应兼容该格式。
+
 ### 规则与错误
 
 | 场景 | 行为 |
 |------|------|
 | social / Pro profile | 返回 `subscriptionInfo` 和 `usageBreakdownList` |
-| API key / headless | `kiro-cli profile -vv` 先调用 `GetProfile`，API key 模式下失败（`GetProfile failed on all endpoints for API key`），CLI 返回 `This command is only available for Pro users`；未观察到可用的 API key 额度查询路径 |
+| API key / headless | 直接调用 `GetUsageLimits` 可返回 `subscriptionInfo` 和 `usageBreakdownList`；`kiro-cli profile -vv` 仍可能因先调用 `GetProfile` 而失败 |
 | 不支持额度的 SSO / BuilderId profile | 可能返回 `AccessDeniedException` / `FEATURE_NOT_SUPPORTED` |
 | 缺失或错误 profileArn | 返回 `ValidationException` 或访问拒绝 |
 

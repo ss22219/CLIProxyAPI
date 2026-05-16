@@ -162,6 +162,43 @@ func TestUsageLimitsCreditExhaustedIncludesOverageCap(t *testing.T) {
 	}
 }
 
+func TestUsageLimitsParsesScientificNextDateReset(t *testing.T) {
+	var result UsageLimitsResponse
+	err := json.Unmarshal([]byte(`{
+		"nextDateReset": 1.780272E9,
+		"overageConfiguration": {"overageStatus": "ENABLED"},
+		"subscriptionInfo": {
+			"subscriptionTitle": "KIRO PRO",
+			"type": "Q_DEVELOPER_STANDALONE_PRO"
+		},
+		"usageBreakdownList": [{
+			"resourceType": "CREDIT",
+			"currentUsageWithPrecision": 5788.06,
+			"usageLimitWithPrecision": 1000.0,
+			"overageCapWithPrecision": 10000.0,
+			"currency": "USD",
+			"nextDateReset": 1.780272E9
+		}]
+	}`), &result)
+	if err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if got := int64(result.NextDateReset); got != 1780272000 {
+		t.Fatalf("root nextDateReset = %d, want 1780272000", got)
+	}
+
+	summary, ok := result.CreditUsage(time.Unix(1778810000, 0))
+	if !ok {
+		t.Fatal("CreditUsage() missing CREDIT bucket")
+	}
+	if got := summary.NextReset.Unix(); got != 1780272000 {
+		t.Fatalf("summary.NextReset = %d, want 1780272000", got)
+	}
+	if summary.Current != 5788.06 {
+		t.Fatalf("summary.Current = %.2f, want 5788.06", summary.Current)
+	}
+}
+
 func TestUsageLimitsCreditNotExhaustedBelowOverageCap(t *testing.T) {
 	result := &UsageLimitsResponse{
 		UsageBreakdownList: []UsageBreakdown{{

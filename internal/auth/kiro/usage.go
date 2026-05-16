@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,8 +19,8 @@ import (
 
 // UsageLimitsResponse is returned by the Kiro GetUsageLimits API.
 type UsageLimitsResponse struct {
-	DaysUntilReset       int   `json:"daysUntilReset"`
-	NextDateReset        int64 `json:"nextDateReset"`
+	DaysUntilReset       int           `json:"daysUntilReset"`
+	NextDateReset        UnixTimestamp `json:"nextDateReset"`
 	OverageConfiguration struct {
 		OverageStatus string `json:"overageStatus"`
 	} `json:"overageConfiguration"`
@@ -32,19 +33,55 @@ type UsageLimitsResponse struct {
 
 // UsageBreakdown describes usage for one Kiro resource.
 type UsageBreakdown struct {
-	ResourceType                 string  `json:"resourceType"`
-	DisplayName                  string  `json:"displayName"`
-	CurrentUsage                 int64   `json:"currentUsage"`
-	CurrentUsageWithPrecision    float64 `json:"currentUsageWithPrecision"`
-	UsageLimit                   int64   `json:"usageLimit"`
-	UsageLimitWithPrecision      float64 `json:"usageLimitWithPrecision"`
-	CurrentOverages              int64   `json:"currentOverages"`
-	CurrentOveragesWithPrecision float64 `json:"currentOveragesWithPrecision"`
-	OverageCap                   int64   `json:"overageCap"`
-	OverageCapWithPrecision      float64 `json:"overageCapWithPrecision"`
-	OverageCharges               float64 `json:"overageCharges"`
-	Currency                     string  `json:"currency"`
-	NextDateReset                int64   `json:"nextDateReset"`
+	ResourceType                 string        `json:"resourceType"`
+	DisplayName                  string        `json:"displayName"`
+	CurrentUsage                 int64         `json:"currentUsage"`
+	CurrentUsageWithPrecision    float64       `json:"currentUsageWithPrecision"`
+	UsageLimit                   int64         `json:"usageLimit"`
+	UsageLimitWithPrecision      float64       `json:"usageLimitWithPrecision"`
+	CurrentOverages              int64         `json:"currentOverages"`
+	CurrentOveragesWithPrecision float64       `json:"currentOveragesWithPrecision"`
+	OverageCap                   int64         `json:"overageCap"`
+	OverageCapWithPrecision      float64       `json:"overageCapWithPrecision"`
+	OverageCharges               float64       `json:"overageCharges"`
+	Currency                     string        `json:"currency"`
+	NextDateReset                UnixTimestamp `json:"nextDateReset"`
+}
+
+// UnixTimestamp accepts upstream epoch values encoded as integers, strings, or scientific-notation numbers.
+type UnixTimestamp int64
+
+// UnmarshalJSON decodes Kiro reset timestamps. Upstream sometimes emits values like 1.780272E9.
+func (t *UnixTimestamp) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "" || raw == "null" {
+		*t = 0
+		return nil
+	}
+	if strings.HasPrefix(raw, `"`) {
+		var strValue string
+		if err := json.Unmarshal(data, &strValue); err != nil {
+			return fmt.Errorf("invalid unix timestamp string: %w", err)
+		}
+		raw = strings.TrimSpace(strValue)
+		if raw == "" {
+			*t = 0
+			return nil
+		}
+	}
+	if value, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		*t = UnixTimestamp(value)
+		return nil
+	}
+	floatValue, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return fmt.Errorf("invalid unix timestamp %q: %w", raw, err)
+	}
+	if math.IsNaN(floatValue) || math.IsInf(floatValue, 0) || floatValue < 0 || floatValue > float64(math.MaxInt64) {
+		return fmt.Errorf("invalid unix timestamp %q", raw)
+	}
+	*t = UnixTimestamp(int64(math.Round(floatValue)))
+	return nil
 }
 
 // CreditUsageSummary is a normalized view of the CREDIT quota bucket.
@@ -155,9 +192,9 @@ func (r *UsageLimitsResponse) CreditUsage(now time.Time) (CreditUsageSummary, bo
 		if strings.EqualFold(overageStatus, "ENABLED") && overageCap > 0 {
 			effectiveLimit += overageCap
 		}
-		resetUnix := item.NextDateReset
+		resetUnix := int64(item.NextDateReset)
 		if resetUnix <= 0 {
-			resetUnix = r.NextDateReset
+			resetUnix = int64(r.NextDateReset)
 		}
 		resetAt := time.Time{}
 		if resetUnix > 0 {
