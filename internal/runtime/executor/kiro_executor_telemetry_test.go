@@ -257,6 +257,25 @@ func TestBuildOpenAINonStreamResponseIncludesEstimatedUsage(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAINonStreamResponseIncludesPromptCacheDetails(t *testing.T) {
+	resp := buildOpenAINonStreamResponse("claude-sonnet-4.6", "pong", nil, usage.Detail{
+		InputTokens:           1200,
+		OutputTokens:          3,
+		TotalTokens:           1203,
+		CachedTokens:          900,
+		CacheCreationTokens:   100,
+		CacheCreation5mTokens: 100,
+		CacheCreation1hTokens: 0,
+	})
+
+	if got := gjson.GetBytes(resp, "usage.prompt_tokens_details.cached_tokens").Int(); got != 900 {
+		t.Fatalf("cached_tokens = %d, want 900; body=%s", got, string(resp))
+	}
+	if got := gjson.GetBytes(resp, "usage.prompt_tokens_details.cache_creation_tokens").Int(); got != 100 {
+		t.Fatalf("cache_creation_tokens = %d, want 100; body=%s", got, string(resp))
+	}
+}
+
 func TestStreamKiroToOpenAISSEFinalChunkIncludesEstimatedUsage(t *testing.T) {
 	reader := strings.NewReader(`{"content":"pong"}` + "\n")
 	out := make(chan cliproxyexecutor.StreamChunk, 8)
@@ -285,6 +304,31 @@ func TestStreamKiroToOpenAISSEFinalChunkIncludesEstimatedUsage(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+func TestTranslateKiroNonStreamResponseToClaudeIncludesPromptCacheUsage(t *testing.T) {
+	openAIResp := buildOpenAINonStreamResponse("claude-sonnet-4.6", "pong", nil, usage.Detail{
+		InputTokens:           1200,
+		OutputTokens:          3,
+		TotalTokens:           1203,
+		CachedTokens:          900,
+		CacheCreationTokens:   100,
+		CacheCreation5mTokens: 100,
+	})
+	out := translateKiroNonStreamResponse(context.Background(), "claude-sonnet-4.6", openAIResp, []byte(`{"stream":false}`), cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatClaude,
+		OriginalRequest: []byte(`{"stream":false}`),
+	})
+
+	if got := gjson.GetBytes(out, "usage.input_tokens").Int(); got != 200 {
+		t.Fatalf("usage.input_tokens = %d, want 200; body=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "usage.cache_read_input_tokens").Int(); got != 900 {
+		t.Fatalf("cache_read_input_tokens = %d, want 900; body=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "usage.cache_creation_input_tokens").Int(); got != 100 {
+		t.Fatalf("cache_creation_input_tokens = %d, want 100; body=%s", got, string(out))
 	}
 }
 

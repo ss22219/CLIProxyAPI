@@ -66,6 +66,11 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
+# Kiro prompt-cache accounting is a local Anthropic-compatible usage view.
+# It reports cache_read_input_tokens/cache_creation_input_tokens to clients; it does not change Kiro upstream billing.
+prompt-cache-accounting-enabled: true
+prompt-cache-ttl-seconds: 300
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""

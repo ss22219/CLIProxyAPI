@@ -65,6 +65,12 @@ type Config struct {
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
+	// PromptCacheAccountingEnabled enables local Anthropic-compatible prompt cache accounting for Kiro.
+	PromptCacheAccountingEnabled bool `yaml:"prompt-cache-accounting-enabled" json:"promptCacheAccountingEnabled"`
+
+	// PromptCacheTTLSeconds caps local prompt cache TTL accounting. Default: 300 seconds.
+	PromptCacheTTLSeconds int `yaml:"prompt-cache-ttl-seconds" json:"promptCacheTtlSeconds"`
+
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
@@ -621,6 +627,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.PromptCacheAccountingEnabled = true
+	cfg.PromptCacheTTLSeconds = 300
 	cfg.DisableCooling = false
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
@@ -683,6 +691,13 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if cfg.ErrorLogsMaxFiles < 0 {
 		cfg.ErrorLogsMaxFiles = 10
+	}
+
+	if cfg.PromptCacheTTLSeconds <= 0 {
+		cfg.PromptCacheTTLSeconds = 300
+	}
+	if cfg.PromptCacheTTLSeconds > 3600 {
+		cfg.PromptCacheTTLSeconds = 3600
 	}
 
 	if cfg.MaxRetryCredentials < 0 {

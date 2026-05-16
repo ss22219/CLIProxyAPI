@@ -31,15 +31,19 @@ func (e *KiroExecutor) logKiroCreditUsage(ctx context.Context, auth *cliproxyaut
 	}
 
 	fields := log.Fields{
-		"auth_id":              authID,
-		"auth_label":           authLabel,
-		"model":                model,
-		"context_length":       contextLength,
-		"local_prompt_tokens":  localPromptTokens,
-		"input_tokens":         detail.InputTokens,
-		"output_tokens":        detail.OutputTokens,
-		"total_tokens":         detail.TotalTokens,
-		"context_extra_tokens": contextExtraTokens,
+		"auth_id":                  authID,
+		"auth_label":               authLabel,
+		"model":                    model,
+		"context_length":           contextLength,
+		"local_prompt_tokens":      localPromptTokens,
+		"input_tokens":             detail.InputTokens,
+		"output_tokens":            detail.OutputTokens,
+		"total_tokens":             detail.TotalTokens,
+		"cached_tokens":            detail.CachedTokens,
+		"cache_creation_tokens":    detail.CacheCreationTokens,
+		"cache_creation_5m_tokens": detail.CacheCreation5mTokens,
+		"cache_creation_1h_tokens": detail.CacheCreation1hTokens,
+		"context_extra_tokens":     contextExtraTokens,
 	}
 	if before != nil {
 		addKiroCreditFields(fields, "credit_before", *before)
@@ -77,14 +81,18 @@ func (e *KiroExecutor) logKiroCreditUsageAfter(auth *cliproxyauth.Auth, token, p
 		return
 	}
 	fields := log.Fields{
-		"auth_id":              authID,
-		"auth_label":           authLabel,
-		"model":                model,
-		"local_prompt_tokens":  localPromptTokens,
-		"input_tokens":         detail.InputTokens,
-		"output_tokens":        detail.OutputTokens,
-		"total_tokens":         detail.TotalTokens,
-		"context_extra_tokens": contextExtraTokens,
+		"auth_id":                  authID,
+		"auth_label":               authLabel,
+		"model":                    model,
+		"local_prompt_tokens":      localPromptTokens,
+		"input_tokens":             detail.InputTokens,
+		"output_tokens":            detail.OutputTokens,
+		"total_tokens":             detail.TotalTokens,
+		"cached_tokens":            detail.CachedTokens,
+		"cache_creation_tokens":    detail.CacheCreationTokens,
+		"cache_creation_5m_tokens": detail.CacheCreation5mTokens,
+		"cache_creation_1h_tokens": detail.CacheCreation1hTokens,
+		"context_extra_tokens":     contextExtraTokens,
 	}
 	addKiroCreditFields(fields, "credit_after", after)
 	if before != nil {

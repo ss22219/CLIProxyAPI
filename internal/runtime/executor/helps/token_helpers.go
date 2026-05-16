@@ -49,6 +49,7 @@ func CountOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 	root := gjson.ParseBytes(payload)
 	segments := make([]string, 0, 32)
 
+	collectOpenAIContent(root.Get("system"), &segments)
 	collectOpenAIMessages(root.Get("messages"), &segments)
 	collectOpenAITools(root.Get("tools"), &segments)
 	collectOpenAIFunctions(root.Get("functions"), &segments)

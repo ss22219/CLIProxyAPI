@@ -109,6 +109,9 @@ func hasNonZeroTokenUsage(detail usage.Detail) bool {
 		detail.OutputTokens != 0 ||
 		detail.ReasoningTokens != 0 ||
 		detail.CachedTokens != 0 ||
+		detail.CacheCreationTokens != 0 ||
+		detail.CacheCreation5mTokens != 0 ||
+		detail.CacheCreation1hTokens != 0 ||
 		detail.TotalTokens != 0
 }
 
@@ -284,6 +287,12 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	if cached.Exists() {
 		detail.CachedTokens = cached.Int()
 	}
+	if creation := usageNode.Get("prompt_tokens_details.cache_creation_tokens"); creation.Exists() {
+		detail.CacheCreationTokens = creation.Int()
+	}
+	if creation := usageNode.Get("prompt_tokens_details.cache_creation_input_tokens"); creation.Exists() {
+		detail.CacheCreationTokens = creation.Int()
+	}
 	reasoning := usageNode.Get("completion_tokens_details.reasoning_tokens")
 	if !reasoning.Exists() {
 		reasoning = usageNode.Get("output_tokens_details.reasoning_tokens")
@@ -311,6 +320,12 @@ func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 	if cached := usageNode.Get("prompt_tokens_details.cached_tokens"); cached.Exists() {
 		detail.CachedTokens = cached.Int()
 	}
+	if creation := usageNode.Get("prompt_tokens_details.cache_creation_tokens"); creation.Exists() {
+		detail.CacheCreationTokens = creation.Int()
+	}
+	if creation := usageNode.Get("prompt_tokens_details.cache_creation_input_tokens"); creation.Exists() {
+		detail.CacheCreationTokens = creation.Int()
+	}
 	if reasoning := usageNode.Get("completion_tokens_details.reasoning_tokens"); reasoning.Exists() {
 		detail.ReasoningTokens = reasoning.Int()
 	}
@@ -323,13 +338,14 @@ func ParseClaudeUsage(data []byte) usage.Detail {
 		return usage.Detail{}
 	}
 	detail := usage.Detail{
-		InputTokens:  usageNode.Get("input_tokens").Int(),
-		OutputTokens: usageNode.Get("output_tokens").Int(),
-		CachedTokens: usageNode.Get("cache_read_input_tokens").Int(),
+		InputTokens:         usageNode.Get("input_tokens").Int(),
+		OutputTokens:        usageNode.Get("output_tokens").Int(),
+		CachedTokens:        usageNode.Get("cache_read_input_tokens").Int(),
+		CacheCreationTokens: usageNode.Get("cache_creation_input_tokens").Int(),
 	}
 	if detail.CachedTokens == 0 {
 		// fall back to creation tokens when read tokens are absent
-		detail.CachedTokens = usageNode.Get("cache_creation_input_tokens").Int()
+		detail.CachedTokens = detail.CacheCreationTokens
 	}
 	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
 	return detail
@@ -345,12 +361,13 @@ func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 		return usage.Detail{}, false
 	}
 	detail := usage.Detail{
-		InputTokens:  usageNode.Get("input_tokens").Int(),
-		OutputTokens: usageNode.Get("output_tokens").Int(),
-		CachedTokens: usageNode.Get("cache_read_input_tokens").Int(),
+		InputTokens:         usageNode.Get("input_tokens").Int(),
+		OutputTokens:        usageNode.Get("output_tokens").Int(),
+		CachedTokens:        usageNode.Get("cache_read_input_tokens").Int(),
+		CacheCreationTokens: usageNode.Get("cache_creation_input_tokens").Int(),
 	}
 	if detail.CachedTokens == 0 {
-		detail.CachedTokens = usageNode.Get("cache_creation_input_tokens").Int()
+		detail.CachedTokens = detail.CacheCreationTokens
 	}
 	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
 	return detail, true

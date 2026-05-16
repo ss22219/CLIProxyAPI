@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -334,4 +336,20 @@ func isKiroAPIKeyAuth(auth *cliproxyauth.Auth) bool {
 		return true
 	}
 	return false
+}
+
+func kiroPromptCacheCredentialKey(auth *cliproxyauth.Auth, token string) string {
+	var parts []string
+	if auth != nil {
+		parts = append(parts, "id="+strings.TrimSpace(auth.ID))
+		parts = append(parts, "index="+strings.TrimSpace(auth.EnsureIndex()))
+		kind, value := auth.AccountInfo()
+		parts = append(parts, "kind="+strings.TrimSpace(kind))
+		parts = append(parts, "value="+strings.TrimSpace(value))
+	}
+	if strings.TrimSpace(token) != "" {
+		parts = append(parts, "token="+strings.TrimSpace(token))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
