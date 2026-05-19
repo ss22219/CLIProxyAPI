@@ -1,7 +1,6 @@
 package kiro
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -104,23 +103,15 @@ func (k *KiroAuth) FetchUsageLimits(ctx context.Context, accessToken, profileArn
 	}
 	trimmedProfileArn := strings.TrimSpace(profileArn)
 
-	body := map[string]string{"origin": "KIRO_CLI"}
-	if trimmedProfileArn != "" {
-		body["profileArn"] = trimmedProfileArn
-	}
-	jsonBody, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("kiro: marshal GetUsageLimits request: %w", err)
-	}
-
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, usageLimitsURL(DefaultRegion, trimmedProfileArn), bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, usageLimitsURL(DefaultRegion, trimmedProfileArn), nil)
 	if err != nil {
 		return nil, fmt.Errorf("kiro: create GetUsageLimits request: %w", err)
 	}
 	SetUsageLimitsHeaders(req, accessToken)
+	req.Close = true
 
 	resp, err := k.httpClient.Do(req)
 	if err != nil {
@@ -234,11 +225,11 @@ func usageLimitsURL(region, profileArn string) string {
 	u := url.URL{
 		Scheme: "https",
 		Host:   fmt.Sprintf("q.%s.amazonaws.com", region),
-		Path:   "/",
+		Path:   "/getUsageLimits",
 	}
 	q := u.Query()
-	q.Set("origin", "KIRO_CLI")
-	q.Set("isEmailRequired", "true")
+	q.Set("origin", "AI_EDITOR")
+	q.Set("resourceType", "AGENTIC_REQUEST")
 	if trimmedArn := strings.TrimSpace(profileArn); trimmedArn != "" {
 		q.Set("profileArn", trimmedArn)
 	}

@@ -5,6 +5,7 @@ package kiro
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -101,9 +102,10 @@ func (k *KiroAuth) refreshSocial(ctx context.Context, storage *KiroTokenStorage,
 		return nil, fmt.Errorf("kiro: create social refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Kiro-CLI")
-	req.Header.Set("Accept", "*/*")
+	req.Header.Set("User-Agent", KiroIDEUserAgent(storage.RefreshToken))
+	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Accept-Encoding", "gzip")
+	req.Close = true
 
 	resp, err := k.httpClient.Do(req)
 	if err != nil {
@@ -111,7 +113,17 @@ func (k *KiroAuth) refreshSocial(ctx context.Context, storage *KiroTokenStorage,
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respReader := io.Reader(resp.Body)
+	if strings.EqualFold(strings.TrimSpace(resp.Header.Get("Content-Encoding")), "gzip") {
+		gzipReader, errGzip := gzip.NewReader(resp.Body)
+		if errGzip != nil {
+			return nil, fmt.Errorf("kiro: decode social refresh gzip response: %w", errGzip)
+		}
+		defer func() { _ = gzipReader.Close() }()
+		respReader = gzipReader
+	}
+
+	respBody, err := io.ReadAll(respReader)
 	if err != nil {
 		return nil, fmt.Errorf("kiro: read social refresh response: %w", err)
 	}

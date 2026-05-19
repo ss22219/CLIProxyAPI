@@ -1,12 +1,17 @@
 # Kiro (AWS Q) API 完整参考文档
 
-> 通过 mitmproxy 抓包 kiro-cli 2.0.1 逆向获得，2026-04-22 初版；2026-05-08 基于 2.2.2（Windows, Social/Google 登录）重新验证并增补；**2026-05-13 基于 kiro-cli 2.3.0（Windows, OIDC/API key）复测 Q API、OIDC、Cognito、Toolkit telemetry 与模型列表**。
+> 通过 mitmproxy 抓包 kiro-cli 2.0.1 逆向获得，2026-04-22 初版；2026-05-08 基于 2.2.2（Windows, Social/Google 登录）重新验证并增补；**2026-05-13 基于 kiro-cli 2.3.0（Windows, OIDC/API key）复测 Q API、OIDC、Cognito、Toolkit telemetry 与模型列表**；**2026-05-19 对照新版 Kiro 实现补正 Social refresh UA 与额度查询 `GET /getUsageLimits`**。
 >
 > 变更摘要（2026-05-13）：
 > - Q API / OIDC / Cognito / Toolkit telemetry 的 SDK UA 升为 `aws-sdk-rust/1.3.15`
 > - Q API app version 升为 `md/appVersion-2.3.0`，不再出现旧的 `exec-env/AmazonQ-For-CLI Version/2.2.2`
 > - Toolkit telemetry 的 `AWSProductVersion` / Q telemetry `ideVersion` 升为 `2.3.0`
 > - API key 模式确认必须带 `tokenType: API_KEY`；`ListAvailableModels`、`GetUsageLimits`、`GenerateAssistantResponse` 不发送 `profileArn`
+>
+> 变更摘要（2026-05-19）：
+> - Social refresh 不再使用 `Kiro-CLI` UA，应使用 `KiroIDE-2.3.0-{machineId}`，其中 `machineId = sha256("KotlinNativeAPI/" + refreshToken)`
+> - `GetUsageLimits` 改为 `GET https://q.{region}.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST[&profileArn=...]`
+> - `GetUsageLimits` 不带 `x-amz-target` / JSON body，UA 为 `aws-sdk-js/1.0.0 ... KiroIDE-2.3.0-{machineId}`
 >
 > 变更摘要（2026-05-08）：
 > - 新增 §13 启动时版本检查（`desktop-release.q.*.amazonaws.com/latest/manifest.json`）
@@ -119,11 +124,11 @@ kiro-cli 凭证存储在 SQLite 数据库中：
 | SendTelemetryEvent | `AmazonCodeWhispererService.SendTelemetryEvent` | `codewhispererruntime` | 遥测上报 |
 | GetProfile | `AmazonCodeWhispererService.GetProfile` | `codewhispererruntime` | 获取用户配置 |
 | ListAvailableModels | `AmazonCodeWhispererService.ListAvailableModels` | `codewhispererruntime` | 获取可用模型 |
-| GetUsageLimits | `AmazonCodeWhispererService.GetUsageLimits` | `codewhispererruntime` | 查询 Credit 额度 |
+| GetUsageLimits | 无；`GET /getUsageLimits` | `codewhispererruntime` | 查询 Credit 额度 |
 
 ### 公共 Headers（所有 Q API 共享）
 
-所有发往 `q.{region}.amazonaws.com` 的请求共享以下 headers：
+除 `GetUsageLimits` 外，发往 `q.{region}.amazonaws.com` 的 Q API 请求共享以下 headers：
 
 ```http
 content-type: application/x-amz-json-1.0
@@ -549,16 +554,16 @@ x-amzn-RequestId: {uuid}
 ---
 ## 9. Social Token Refresh（社交登录）
 
-用于 Google / GitHub 等社交登录的 token 刷新。**2026-05-08 基于 kiro-cli 2.2.2（Google 登录）实抓验证。**
+用于 Google / GitHub 等社交登录的 token 刷新。**2026-05-08 基于 kiro-cli 2.2.2（Google 登录）实抓验证；2026-05-19 对照新版 Kiro 实现补正 UA。**
 
 ### 请求
 
 ```http
 POST https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken HTTP/2.0
 content-type: application/json
-user-agent: Kiro-CLI
-accept: */*
-accept-encoding: gzip
+user-agent: KiroIDE-2.3.0-{machineId}
+accept: application/json, text/plain, */*
+accept-encoding: gzip, compress, deflate, br
 content-length: 251
 ```
 
@@ -572,8 +577,8 @@ content-length: 251
 |------|------|
 | HTTP 版本 | **HTTP/2.0**（CloudFront 前端） |
 | 认证 | 不使用 Bearer、不使用 SigV4，仅 body 内的 `refreshToken` |
-| `user-agent` | 字面量 **`Kiro-CLI`**（不同于其他 API 用的 `aws-sdk-rust/...`） |
-| `accept` | 实测为 `*/*`，**没有**显式 `application/json` |
+| `user-agent` | `KiroIDE-2.3.0-{machineId}`；`machineId = sha256("KotlinNativeAPI/" + refreshToken)` |
+| `accept` | `application/json, text/plain, */*` |
 | Body 字段 | 只有 `refreshToken`，无 clientId / clientSecret / grantType |
 | 代理 | **走 `HTTPS_PROXY`**（mitmproxy 能截获；与 §8 OIDC 备注的 "不走代理" 不同） |
 | region | 实测固定 `us-east-1`，与 sqlite 里的 region 字段无关 |
@@ -611,7 +616,7 @@ via: 1.1 ...cloudfront.net (CloudFront)
 |-|-----------|-------------|
 | 请求字段名 | `clientId` / `clientSecret` / `grantType` / `refreshToken`（camelCase） | 仅 `refreshToken` |
 | 响应字段名 | `accessToken` / `expiresIn` / `refreshToken` / `tokenType` / `idToken` | `accessToken` / `expiresIn` / `profileArn` / `refreshToken`（无 tokenType / idToken） |
-| UA | aws-sdk-rust/... | 字面量 `Kiro-CLI` |
+| UA | aws-sdk-rust/... | `KiroIDE-2.3.0-{machineId}` |
 | 走代理？ | 原 doc 断言不走（未在 2.2.2 复现验证） | **走** |
 
 ### 触发条件
@@ -687,7 +692,7 @@ kiro-cli 每次进程启动时读 sqlite 中 `kirocli:social:token.expires_at`�
 | Tool input 增量 | `{"input":"参数片段","name":"fs_read","toolUseId":"tooluse_xxx"}` | **有 name 字段** |
 | Tool use 结束 | `{"name":"fs_read","stop":true,"toolUseId":"tooluse_xxx"}` | |
 | Followup 提示 | `{"followupPrompt":"..."}` | 忽略 |
-| 上下文使用率 | `{"contextUsagePercentage":0.226}` | 百分数点，`0.226` 表示 `0.226%`，不是 0~1 ratio |
+| 上下文使用率 | `{"contextUsagePercentage":0.226}` | 0~1 ratio，`0.226` 表示约 22.6%；旧流量若出现大于 1 的值再按百分数点兼容处理 |
 
 ### 事件解析规则
 
@@ -919,24 +924,17 @@ Q API 查询额度，但 `kiro-cli profile` 命令本身会先走 `GetProfile`�
 ### 请求
 
 ```http
-POST https://q.us-east-1.amazonaws.com/?origin=KIRO_CLI&isEmailRequired=true[&profileArn={encoded_arn}]
-content-type: application/x-amz-json-1.0
-x-amz-target: AmazonCodeWhispererService.GetUsageLimits
+GET https://q.us-east-1.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST[&profileArn={encoded_arn}]
 authorization: Bearer {accessToken}
-user-agent: aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 md/appVersion-2.3.0 app/AmazonQ-For-CLI
-x-amz-user-agent: aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.14474 os/{os} lang/rust/1.92.0 m/F app/AmazonQ-For-CLI
-x-amzn-codewhisperer-optout: false
+user-agent: aws-sdk-js/1.0.0 ua/2.1 os/darwin#24.6.0 lang/js md/nodejs#22.21.1 api/codewhispererruntime#1.0.0 m/N,E KiroIDE-2.3.0-{machineId}
+x-amz-user-agent: aws-sdk-js/1.0.0 KiroIDE-2.3.0-{machineId}
+amz-sdk-invocation-id: {uuid}
+amz-sdk-request: attempt=1; max=1
 accept: */*
 accept-encoding: gzip
 ```
 
-```json
-{
-  "origin": "KIRO_CLI",
-  "isEmailRequired": true,
-  "profileArn": "arn:aws:codewhisperer:us-east-1:XXXX:profile/XXXX"
-}
-```
+无 JSON body，不发送 `content-type` 和 `x-amz-target`。`machineId` 可按 Social refresh 相同规则由凭证派生。
 
 API key / headless 模式不发送 `profileArn`，并带 `tokenType: API_KEY` header。
 
@@ -991,7 +989,7 @@ API key / headless 模式不发送 `profileArn`，并带 `tokenType: API_KEY` he
 | 场景 | 行为 |
 |------|------|
 | social / Pro profile | 返回 `subscriptionInfo` 和 `usageBreakdownList` |
-| API key / headless | 直接调用 `GetUsageLimits` 可返回 `subscriptionInfo` 和 `usageBreakdownList`；`kiro-cli profile -vv` 仍可能因先调用 `GetProfile` 而失败 |
+| API key / headless | 直接调用 `GET /getUsageLimits` 可返回 `subscriptionInfo` 和 `usageBreakdownList`；`kiro-cli profile -vv` 仍可能因先调用 `GetProfile` 而失败 |
 | 不支持额度的 SSO / BuilderId profile | 可能返回 `AccessDeniedException` / `FEATURE_NOT_SUPPORTED` |
 | 缺失或错误 profileArn | 返回 `ValidationException` 或访问拒绝 |
 
@@ -1130,23 +1128,18 @@ authorization: Bearer ksk_...
 
 ### GetUsageLimits / 额度查询
 
-2.3.0 API key 模式可以直接调用 `GetUsageLimits`，不发送 `profileArn`，query/body 与模型列表一样只保留
-`origin=KIRO_CLI`，另带 `isEmailRequired=true`：
+2.3.0 API key 模式可以直接调用 `GET /getUsageLimits`，不发送 `profileArn`，query 只保留
+`origin=AI_EDITOR&resourceType=AGENTIC_REQUEST`：
 
 ```http
-POST https://q.us-east-1.amazonaws.com/?origin=KIRO_CLI&isEmailRequired=true
-x-amz-target: AmazonCodeWhispererService.GetUsageLimits
+GET https://q.us-east-1.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST
 authorization: Bearer ksk_...
 tokenType: API_KEY
-content-type: application/x-amz-json-1.0
+user-agent: aws-sdk-js/1.0.0 ... KiroIDE-2.3.0-{machineId}
+x-amz-user-agent: aws-sdk-js/1.0.0 KiroIDE-2.3.0-{machineId}
 ```
 
-```json
-{
-  "origin": "KIRO_CLI",
-  "isEmailRequired": true
-}
-```
+无 JSON body，不发送 `content-type` 和 `x-amz-target`。
 
 CPA 实测返回 `subscriptionInfo.subscriptionTitle = "KIRO PRO"`、`subscriptionInfo.type = "Q_DEVELOPER_STANDALONE_PRO"` 以及
 `usageBreakdownList[]`，因此前端额度页应优先展示该接口返回的真实额度，而不是模型列表。
@@ -1188,7 +1181,7 @@ x-amz-target: AWSCognitoIdentityService.GetCredentialsForIdentity
 | ListAvailableModels query/body | `origin` + `profileArn` | 仅 `origin` |
 | GenerateAssistantResponse body | 顶层 `profileArn` | 无顶层 `profileArn` |
 | SendTelemetryEvent body | 含 `profileArn` | 无 `profileArn` |
-| GetUsageLimits query/body | `origin` + `profileArn` + `isEmailRequired` | `origin` + `isEmailRequired`，无 `profileArn` |
+| GetUsageLimits query/body | `origin=AI_EDITOR` + `resourceType=AGENTIC_REQUEST` + `profileArn` query，无 body | `origin=AI_EDITOR` + `resourceType=AGENTIC_REQUEST`，无 `profileArn`、无 body |
 | GetProfile 失败 | 可能影响 profile 发现 | 403 非致命 |
 
 本地实现可将 API key 作为新的 Kiro auth kind 处理，运行时 executor 根据 auth kind 决定是否注入

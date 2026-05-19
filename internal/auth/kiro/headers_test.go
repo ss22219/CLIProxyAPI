@@ -65,6 +65,25 @@ func TestSetRuntimeHeaders_SendTelemetryEvent(t *testing.T) {
 	}
 }
 
+func TestSetUsageLimitsHeaders_UsesKiroIDEGetShape(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "https://q.us-east-1.amazonaws.com/getUsageLimits", nil)
+	SetUsageLimitsHeaders(req, "ksk_test")
+
+	assertHeader(t, req, "Authorization", "Bearer ksk_test")
+	assertHeader(t, req, "tokenType", "API_KEY")
+	assertHeader(t, req, "amz-sdk-request", "attempt=1; max=1")
+	assertHeaderContains(t, req, "User-Agent", "aws-sdk-js/1.0.0")
+	assertHeaderContains(t, req, "User-Agent", "api/codewhispererruntime#1.0.0")
+	assertHeaderContains(t, req, "User-Agent", "KiroIDE-2.3.0-")
+	assertHeaderContains(t, req, "x-amz-user-agent", "aws-sdk-js/1.0.0 KiroIDE-2.3.0-")
+	if got := req.Header.Get("x-amz-target"); got != "" {
+		t.Fatalf("x-amz-target = %q, want empty for GET getUsageLimits", got)
+	}
+	if got := req.Header.Get("Content-Type"); got != "" {
+		t.Fatalf("Content-Type = %q, want empty for GET getUsageLimits", got)
+	}
+}
+
 func TestKiroOSTag(t *testing.T) {
 	tag := KiroOSTag()
 	valid := map[string]bool{"windows": true, "linux": true, "macos": true}

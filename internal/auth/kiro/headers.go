@@ -1,6 +1,8 @@
 package kiro
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"runtime"
@@ -25,6 +27,17 @@ const (
 	kiroCLIAppVersion = "2.3.0"
 	kiroSDKVersion    = "1.3.15"
 )
+
+// KiroMachineID derives the Kiro IDE machine id used by kiro-cli social and
+// profile requests when no persisted machine id is available.
+func KiroMachineID(seed string) string {
+	sum := sha256.Sum256([]byte("KotlinNativeAPI/" + seed))
+	return hex.EncodeToString(sum[:])
+}
+
+func KiroIDEUserAgent(seed string) string {
+	return fmt.Sprintf("KiroIDE-%s-%s", kiroCLIAppVersion, KiroMachineID(seed))
+}
 
 // SetCommonQHeaders sets the shared headers for all Q API requests per the Kiro API spec.
 // apiTag is "codewhispererstreaming" or "codewhispererruntime".
@@ -62,9 +75,17 @@ func SetRuntimeHeaders(req *http.Request, token, target string) {
 
 // SetUsageLimitsHeaders sets headers for GetUsageLimits.
 func SetUsageLimitsHeaders(req *http.Request, token string) {
-	SetCommonQHeaders(req, token,
-		"AmazonCodeWhispererService.GetUsageLimits",
-		"codewhispererruntime", "m/F")
+	machineID := KiroMachineID(token)
+	req.Header.Set("Authorization", "Bearer "+token)
+	if strings.HasPrefix(strings.TrimSpace(token), "ksk_") {
+		req.Header.Set("tokenType", "API_KEY")
+	}
+	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.0 KiroIDE-%s-%s", kiroCLIAppVersion, machineID))
+	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.0 ua/2.1 os/darwin#24.6.0 lang/js md/nodejs#22.21.1 api/codewhispererruntime#1.0.0 m/N,E KiroIDE-%s-%s", kiroCLIAppVersion, machineID))
+	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
+	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Encoding", "gzip")
 }
 
 // SetModelsHeaders sets headers for ListAvailableModels (x-amz-user-agent ends with m/F,C).

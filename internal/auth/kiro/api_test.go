@@ -241,8 +241,10 @@ func TestProfileArnOrDefault(t *testing.T) {
 func TestRefreshSocialUsesSocialProfileArnOnly(t *testing.T) {
 	var capturedURL string
 	var capturedBody string
+	var capturedUserAgent string
 	svc := &KiroAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		capturedURL = req.URL.String()
+		capturedUserAgent = req.Header.Get("User-Agent")
 		body, _ := io.ReadAll(req.Body)
 		capturedBody = string(body)
 		return &http.Response{
@@ -271,6 +273,9 @@ func TestRefreshSocialUsesSocialProfileArnOnly(t *testing.T) {
 	}
 	if capturedBody != `{"refreshToken":"refresh-social"}` {
 		t.Fatalf("social refresh body = %s", capturedBody)
+	}
+	if !strings.HasPrefix(capturedUserAgent, "KiroIDE-2.3.0-") {
+		t.Fatalf("social refresh User-Agent = %q, want KiroIDE 2.3.0", capturedUserAgent)
 	}
 	if result.ProfileArn != "arn:aws:codewhisperer:us-east-1:111:profile/social" {
 		t.Fatalf("social profileArn = %q", result.ProfileArn)
@@ -329,6 +334,62 @@ func TestListAvailableModelsURLIncludesQueryParameters(t *testing.T) {
 	}
 	if query.Get("profileArn") != "arn:aws:codewhisperer:us-east-1:123:profile/A/B" {
 		t.Fatalf("profileArn query = %q", query.Get("profileArn"))
+	}
+}
+
+func TestFetchUsageLimitsUsesKiroIDEGetEndpoint(t *testing.T) {
+	var capturedMethod string
+	var capturedURL string
+	var capturedTarget string
+	var capturedUserAgent string
+	svc := &KiroAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		capturedMethod = req.Method
+		capturedURL = req.URL.String()
+		capturedTarget = req.Header.Get("x-amz-target")
+		capturedUserAgent = req.Header.Get("User-Agent")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"nextDateReset": 1780272000,
+				"subscriptionInfo": {"subscriptionTitle":"KIRO PRO","type":"Q_DEVELOPER_STANDALONE_PRO"},
+				"usageBreakdownList": [{"resourceType":"CREDIT","currentUsageWithPrecision":1.5,"usageLimitWithPrecision":1000.0}]
+			}`)),
+			Request: req,
+		}, nil
+	})}}
+
+	result, err := svc.FetchUsageLimits(context.Background(), "token", "arn:aws:codewhisperer:us-east-1:123:profile/ABC")
+	if err != nil {
+		t.Fatalf("FetchUsageLimits failed: %v", err)
+	}
+	if capturedMethod != http.MethodGet {
+		t.Fatalf("method = %q, want GET", capturedMethod)
+	}
+	parsed, err := url.Parse(capturedURL)
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	if parsed.Path != "/getUsageLimits" {
+		t.Fatalf("path = %q, want /getUsageLimits", parsed.Path)
+	}
+	if parsed.Query().Get("origin") != "AI_EDITOR" {
+		t.Fatalf("origin = %q, want AI_EDITOR", parsed.Query().Get("origin"))
+	}
+	if parsed.Query().Get("resourceType") != "AGENTIC_REQUEST" {
+		t.Fatalf("resourceType = %q, want AGENTIC_REQUEST", parsed.Query().Get("resourceType"))
+	}
+	if parsed.Query().Get("profileArn") != "arn:aws:codewhisperer:us-east-1:123:profile/ABC" {
+		t.Fatalf("profileArn = %q", parsed.Query().Get("profileArn"))
+	}
+	if capturedTarget != "" {
+		t.Fatalf("x-amz-target = %q, want empty", capturedTarget)
+	}
+	if !strings.Contains(capturedUserAgent, "KiroIDE-2.3.0-") {
+		t.Fatalf("User-Agent = %q, want KiroIDE 2.3.0", capturedUserAgent)
+	}
+	if len(result.UsageBreakdownList) != 1 {
+		t.Fatalf("usageBreakdownList length = %d, want 1", len(result.UsageBreakdownList))
 	}
 }
 
