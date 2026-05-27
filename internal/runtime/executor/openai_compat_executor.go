@@ -104,10 +104,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 	}
 
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	upstreamModel := e.resolveUpstreamModel(auth, req.Model)
+	translated, err = thinking.ApplyThinking(translated, upstreamModel, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return resp, err
 	}
+	translated = e.overrideModel(translated, thinking.ParseSuffix(upstreamModel).ModelName)
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -201,10 +203,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	translated = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
 
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	upstreamModel := e.resolveUpstreamModel(auth, req.Model)
+	translated, err = thinking.ApplyThinking(translated, upstreamModel, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, err
 	}
+	translated = e.overrideModel(translated, thinking.ParseSuffix(upstreamModel).ModelName)
 
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
@@ -320,9 +324,10 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 	to := sdktranslator.FromString("openai")
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
 
-	modelForCounting := baseModel
+	upstreamModel := e.resolveUpstreamModel(auth, req.Model)
+	modelForCounting := thinking.ParseSuffix(upstreamModel).ModelName
 
-	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	translated, err := thinking.ApplyThinking(translated, upstreamModel, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
@@ -388,6 +393,33 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 		}
 	}
 	return nil
+}
+
+func (e *OpenAICompatExecutor) resolveUpstreamModel(auth *cliproxyauth.Auth, requestedModel string) string {
+	compat := e.resolveCompatConfig(auth)
+	if compat == nil {
+		return requestedModel
+	}
+	parsed := thinking.ParseSuffix(requestedModel)
+	base := strings.TrimSpace(parsed.ModelName)
+	if base == "" {
+		base = requestedModel
+	}
+	for i := range compat.Models {
+		m := compat.Models[i]
+		alias := strings.TrimSpace(m.Alias)
+		name := strings.TrimSpace(m.Name)
+		if alias != "" && strings.EqualFold(alias, base) {
+			if parsed.HasSuffix && parsed.RawSuffix != "" {
+				return name + "(" + parsed.RawSuffix + ")"
+			}
+			return name
+		}
+		if strings.EqualFold(name, base) {
+			return requestedModel
+		}
+	}
+	return requestedModel
 }
 
 func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
