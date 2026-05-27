@@ -164,6 +164,15 @@ func buildPromptCacheProfile(model string, payload []byte, totalInputTokens int6
 		}
 	}
 
+	// Implicit breakpoint at the very last block when the request carries no explicit
+	// cache_control markers. This lets backends without Anthropic-style annotations
+	// (Kiro upstream, OpenAI-format clients, etc.) still benefit from prefix matching:
+	// repeating the same conversation prefix within TTL is reported as cache_read.
+	if len(profile.breakpoints) == 0 && len(profile.blocks) > 0 {
+		lastIdx := len(profile.blocks) - 1
+		addPromptCacheBreakpoint(&profile, seenBreakpoints, lastIdx, maxSupportedTTL)
+	}
+
 	return profile, true
 }
 
